@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NIDS – QABNN Dashboard</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #f4f6f9;
+            text-align: center;
+        }
+
+        .container {
+            width: 60%;
+            margin: 40px auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.1);
+        }
+
+        .step {
+            padding: 10px;
+            margin: 8px 0;
+            border-left: 5px solid #3498db;
+            text-align: left;
+        }
+
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            font-size: 20px;
+            font-weight: bold;
+            border-radius: 8px;
+        }
+
+        .normal {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .attack {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Network Intrusion Detection System (QABNN)</h1>
+
+<div class="container">
+
+    <div class="step">1️⃣ Packet Captured</div>
+    <div class="step">2️⃣ Feature Extraction</div>
+    <div class="step">3️⃣ Data Preprocessing</div>
+    <div class="step">4️⃣ Model Prediction</div>
+    <div class="step">5️⃣ Alert Generation</div>
+
+    <form method="POST">
+        <button type="submit">Run Detection</button>
+    </form>
+
+    {% if prediction %}
+        <div class="result 
+            {% if prediction == 'Normal Traffic' %}
+                normal
+            {% else %}
+                attack
+            {% endif %}
+        ">
+            {{ prediction }}
+        </div>
+    {% endif %}
+
+</div>
+
+</body>
+</html>

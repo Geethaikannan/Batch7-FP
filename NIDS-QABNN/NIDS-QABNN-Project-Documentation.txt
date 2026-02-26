@@ -1,0 +1,455 @@
+# NIDS-QABNN Project Documentation
+# Complete Project Overview, Code Explanations, and Workflow
+# This file is designed to be used for training an AI agent
+
+================================================================================
+PROJECT OVERVIEW
+================================================================================
+
+Project Name: NIDS-QABNN (Network Intrusion Detection System using Quantum-inspired Attention-based Binary Neural Network)
+
+Purpose: 
+The NIDS-QABNN project is designed to detect network intrusions using a novel quantum-inspired binary neural network approach. The system uses the UNSW-NB15 dataset, which is a comprehensive network intrusion detection dataset widely used in cybersecurity research.
+
+Dataset:
+- UNSW-NB15 Training Set: data/UNSW_NB15_training-set.csv
+- UNSW-NB15 Testing Set: data/UNSW_NB15_testing-set.csv
+- The dataset contains network traffic data with various features and binary labels (normal vs attack)
+
+Dependencies:
+- numpy
+- pandas
+- scikit-learn
+- matplotlib
+- seaborn
+
+================================================================================
+PROJECT STRUCTURE
+================================================================================
+
+NIDS-QABNN/
+├── README.md                          # Project README
+├── requirements.txt                   # Python dependencies
+├── data/
+│   ├── UNSW_NB15_training-set.csv    # Training dataset
+│   └── UNSW_NB15_testing-set.csv     # Testing dataset
+├── notebooks/
+│   └── day1_data_check.ipynb          # Initial data exploration notebook
+└── src/
+    ├── data_loader.py                 # Data loading functions
+    ├── preprocessing.py               # Data preprocessing functions
+    ├── qabnn.py                       # QABNN model implementation
+    └── train.py                       # Main training and evaluation pipeline
+
+================================================================================
+CODE EXPLANATIONS AND WORKFLOW
+================================================================================
+
+================================================================================
+FILE: src/data_loader.py
+================================================================================
+
+Purpose: This file handles loading the UNSW-NB15 dataset from CSV files.
+
+Code:
+---
+import pandas as pd
+
+def load_data(train_path, test_path):
+    """
+    Load UNSW-NB15 training and testing datasets.
+    
+    Parameters:
+    -----------
+    train_path : str
+        Path to the training CSV file
+    test_path : str
+        Path to the testing CSV file
+    
+    Returns:
+    --------
+    train_df : pandas.DataFrame
+        Training dataset as a DataFrame
+    test_df : pandas.DataFrame
+        Testing dataset as a DataFrame
+    """
+    train_df = pd.read_csv(train_path)
+    test_df = pd.read_csv(test_path)
+
+    return train_df, test_df
+---
+
+Explanation:
+- The load_data function uses pandas to read CSV files
+- It takes two parameters: train_path and test_path
+- Returns two pandas DataFrames: one for training and one for testing
+- This is the entry point for loading the UNSW-NB15 dataset
+
+Usage:
+    from data_loader import load_data
+    train_df, test_df = load_data("data/train.csv", "data/test.csv")
+
+================================================================================
+FILE: src/preprocessing.py
+================================================================================
+
+Purpose: This file handles all data preprocessing steps including removing ID columns, encoding categorical features, and scaling numerical features.
+
+Code:
+---
+import numpy as np
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+def preprocess_data(df):
+    """
+    Preprocess the UNSW-NB15 dataset.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        The input DataFrame to preprocess
+    
+    Returns:
+    --------
+    X : numpy.ndarray
+        Preprocessed feature matrix
+    y : pandas.Series
+        Target labels (0 for normal, 1 for attack)
+    """
+    df = df.copy()
+
+    # Remove ID column if exists
+    if 'id' in df.columns:
+        df.drop(columns=['id'], inplace=True)
+
+    # Separate label
+    y = df['label']
+    X = df.drop(columns=['label'])
+
+    # Encode categorical columns
+    for col in X.select_dtypes(include=['object']).columns:
+        le = LabelEncoder()
+        X[col] = le.fit_transform(X[col])
+
+    # Scale features
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
+    return X, y
+---
+
+Explanation:
+- The preprocess_data function performs the following steps:
+  1. Creates a copy of the DataFrame to avoid modifying the original
+  2. Removes the 'id' column if it exists (not useful for training)
+  3. Separates the 'label' column (target variable) from features
+  4. Encodes categorical columns using LabelEncoder (converts string categories to numbers)
+  5. Scales numerical features using StandardScaler (standardizes features to have mean=0 and std=1)
+  6. Returns preprocessed features (X) and labels (y)
+
+Key Concepts:
+- LabelEncoder: Converts categorical string values to numerical values (e.g., 'tcp' -> 0, 'udp' -> 1)
+- StandardScaler: Standardizes features by removing the mean and scaling to unit variance
+
+Usage:
+    from preprocessing import preprocess_data
+    X_train, y_train = preprocess_data(train_df)
+    X_test, y_test = preprocess_data(test_df)
+
+================================================================================
+FILE: src/qabnn.py
+================================================================================
+
+Purpose: This file implements the Quantum-inspired Attention-based Binary Neural Network (QABNN), a novel approach for binary classification inspired by quantum computing concepts.
+
+Code:
+---
+import numpy as np
+
+class QABNN:
+    """
+    Quantum-inspired Attention-based Binary Neural Network (QABNN)
+    
+    This model uses binary prototypes for classification, inspired by quantum
+    computing concepts where states are binary (0 or 1).
+    """
+    
+    def __init__(self):
+        """Initialize the QABNN model."""
+        self.normal_proto = None
+        self.attack_proto = None
+
+    def binarize(self, X):
+        """
+        Convert continuous features to binary values.
+        
+        Parameters:
+        -----------
+        X : numpy.ndarray
+            Input feature matrix
+        
+        Returns:
+        --------
+        X_bin : numpy.ndarray
+            Binary feature matrix (0 or 1)
+        """
+        return (X > 0).astype(np.uint8)
+
+    def fit(self, X, y):
+        """
+        Train the QABNN model by computing prototypes.
+        
+        Parameters:
+        -----------
+        X : numpy.ndarray
+            Training feature matrix
+        y : numpy.ndarray or pandas.Series
+            Training labels (0 for normal, 1 for attack)
+        """
+        X_bin = self.binarize(X)
+
+        # Separate normal and attack samples
+        normal_samples = X_bin[y == 0]
+        attack_samples = X_bin[y == 1]
+
+        # Compute prototypes (mean of binary samples)
+        self.normal_proto = np.mean(normal_samples, axis=0)
+        self.attack_proto = np.mean(attack_samples, axis=0)
+
+    def predict(self, X):
+        """
+        Make predictions using prototype distance.
+        
+        Parameters:
+        -----------
+        X : numpy.ndarray
+            Feature matrix to predict
+        
+        Returns:
+        --------
+        predictions : numpy.ndarray
+            Binary predictions (0 for normal, 1 for attack)
+        """
+        X_bin = self.binarize(X)
+
+        # Calculate Hamming distance to normal prototype
+        normal_dist = np.sum(
+            np.bitwise_xor(X_bin, self.normal_proto > 0.5),
+            axis=1
+        )
+
+        # Calculate Hamming distance to attack prototype
+        attack_dist = np.sum(
+            np.bitwise_xor(X_bin, self.attack_proto > 0.5),
+            axis=1
+        )
+
+        # Predict attack if closer to attack prototype
+        return (attack_dist < normal_dist).astype(int)
+---
+
+Explanation:
+- The QABNN class implements a quantum-inspired binary neural network
+- Key concepts:
+  1. Binarization: Converts continuous features to binary (0 or 1) using threshold 0
+  2. Prototypes: Computes mean binary vectors for each class (normal and attack)
+  3. Prediction: Uses Hamming distance (bitwise XOR + sum) to determine the nearest prototype
+  4. Decision: If the distance to attack prototype is less than distance to normal prototype, predict attack
+
+Quantum Inspiration:
+- In quantum computing, qubits can be in superposition but measure to binary states
+- The prototype approach is similar to quantum state representation
+- Hamming distance mimics quantum measurement
+
+Usage:
+    from qabnn import QABNN
+    
+    qabnn = QABNN()
+    qabnn.fit(X_train, y_train)
+    predictions = qabnn.predict(X_test)
+
+================================================================================
+FILE: src/train.py
+================================================================================
+
+Purpose: This is the main training and evaluation pipeline that combines all components to train both the QABNN model and a baseline Random Forest model for comparison.
+
+Code:
+---
+from data_loader import load_data
+from preprocessing import preprocess_data
+from qabnn import QABNN
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.ensemble import RandomForestClassifier
+
+TRAIN_PATH = "../data/UNSW_NB15_training-set.csv"
+TEST_PATH = "../data/UNSW_NB15_testing-set.csv"
+
+
+def main():
+    """
+    Main training and evaluation pipeline.
+    
+    This function:
+    1. Loads the training and testing data
+    2. Preprocesses the data
+    3. Trains and evaluates QABNN model
+    4. Trains and evaluates Random Forest baseline
+    5. Compares the results
+    """
+    # Step 1: Load data
+    train_df, test_df = load_data(TRAIN_PATH, TEST_PATH)
+
+    # Step 2: Preprocess data
+    X_train, y_train = preprocess_data(train_df)
+    X_test, y_test = preprocess_data(test_df)
+
+    # Step 3: Train and evaluate QABNN
+    qabnn = QABNN()
+    qabnn.fit(X_train, y_train)
+    y_pred_qabnn = qabnn.predict(X_test)
+
+    print("QABNN Results")
+    print(confusion_matrix(y_test, y_pred_qabnn))
+    print(classification_report(y_test, y_pred_qabnn))
+
+    # Step 4: Train and evaluate Random Forest baseline
+    rf = RandomForestClassifier(n_estimators=100)
+    rf.fit(X_train, y_train)
+    y_pred_rf = rf.predict(X_test)
+
+    print("Random Forest Results")
+    print(confusion_matrix(y_test, y_pred_rf))
+    print(classification_report(y_test, y_pred_rf))
+
+if __name__ == "__main__":
+    main()
+
+
+import os
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+TRAIN_PATH = os.path.join(BASE_DIR, "data", "UNSW_NB15_training-set.csv")
+TEST_PATH = os.path.join(BASE_DIR, "data", "UNSW_NB15_testing-set.csv")
+---
+
+Explanation:
+- The train.py file is the main entry point for training the models
+- It performs the following steps:
+  1. Loads training and testing data from CSV files using data_loader
+  2. Preprocesses both datasets using preprocessing module
+  3. Trains the QABNN model on training data
+  4. Makes predictions on test data using QABNN
+  5. Evaluates QABNN using confusion matrix and classification report
+  6. Trains a Random Forest classifier as a baseline comparison
+  7. Evaluates Random Forest using confusion matrix and classification report
+
+Key Components:
+- QABNN: The quantum-inspired binary neural network model
+- RandomForestClassifier: A traditional ML baseline for comparison
+- classification_report: Shows precision, recall, F1-score for each class
+- confusion_matrix: Shows true/false positives/negatives
+
+Usage:
+    python src/train.py
+
+Or import and use functions:
+    from train import load_data, preprocess_data
+    from qabnn import QABNN
+    
+    # Load and preprocess data
+    train_df, test_df = load_data(TRAIN_PATH, TEST_PATH)
+    X_train, y_train = preprocess_data(train_df)
+    
+    # Train model
+    model = QABNN()
+    model.fit(X_train, y_train)
+
+================================================================================
+COMPLETE WORKFLOW
+================================================================================
+
+The complete workflow of the NIDS-QABNN project is as follows:
+
+1. DATA LOADING PHASE
+   - Read training data from CSV: data/UNSW_NB15_training-set.csv
+   - Read testing data from CSV: data/UNSW_NB15_testing-set.csv
+   - Store as pandas DataFrames
+
+2. DATA PREPROCESSING PHASE
+   - Remove unnecessary columns (e.g., 'id')
+   - Separate features (X) from labels (y)
+   - Encode categorical features using LabelEncoder
+   - Scale numerical features using StandardScaler
+
+3. MODEL TRAINING PHASE
+   QABNN Model:
+   - Binarize all features (convert to 0 or 1)
+   - Compute binary prototype for normal traffic (mean of normal samples)
+   - Compute binary prototype for attack traffic (mean of attack samples)
+   
+   Random Forest Model (Baseline):
+   - Train 100 decision trees
+   - Use bootstrap sampling
+   - Combine predictions through voting
+
+4. PREDICTION PHASE
+   QABNN Model:
+   - Binarize test features
+   - Calculate Hamming distance to each prototype
+   - Assign class based on nearest prototype
+   
+   Random Forest Model:
+   - Pass features through all decision trees
+   - Aggregate predictions (majority vote)
+
+5. EVALUATION PHASE
+   - Compute confusion matrix
+   - Calculate precision, recall, F1-score
+   - Compare QABNN vs Random Forest performance
+
+================================================================================
+KEY CONCEPTS FOR AI AGENT TRAINING
+================================================================================
+
+1. NETWORK INTRUSION DETECTION
+   - Binary classification: Normal (0) vs Attack (1)
+   - Features: Network traffic attributes (protocol, bytes, packets, etc.)
+   - Goal: Minimize false negatives (missed attacks) while maintaining reasonable false positives
+
+2. QUANTUM-INSPIRED COMPUTING
+   - QABNN uses binary representation similar to quantum bits (qubits)
+   - Prototype-based classification is inspired by quantum state vectors
+   - Hamming distance mimics quantum measurement
+
+3. MACHINE LEARNING PIPELINE
+   - Data loading → Preprocessing → Training → Evaluation
+   - Importance of data preprocessing (encoding, scaling)
+   - Model comparison with baselines
+
+4. EVALUATION METRICS
+   - Accuracy: Overall correctness
+   - Precision: Of predicted attacks, how many are real attacks
+   - Recall: Of real attacks, how many were detected
+   - F1-score: Harmonic mean of precision and recall
+   - Confusion Matrix: Shows all prediction categories
+
+================================================================================
+RUNNING THE PROJECT
+================================================================================
+
+To run the complete project:
+
+1. Install dependencies:
+   pip install -r requirements.txt
+
+2. Run training pipeline:
+   python src/train.py
+
+3. Or use the Jupyter notebook:
+   jupyter notebook notebooks/day1_data_check.ipynb
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
