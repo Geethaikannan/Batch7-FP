@@ -66,7 +66,9 @@ def index():
         live_status=live_status,
         live_data=live_data,
         realtime_nids=nids_system.is_capturing,
-        nids_stats=nids_system.get_statistics()
+        nids_stats=nids_system.get_statistics(),
+        recent_normals=recent_normals,
+        recent_attacks=recent_attacks
     )
 
 @app.route('/live-data')
