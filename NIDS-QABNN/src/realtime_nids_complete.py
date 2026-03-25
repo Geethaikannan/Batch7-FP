@@ -50,6 +50,18 @@ class RealtimeNIDSSystem:
         self.flow_count = 0
         self.detection_count = 0
         
+        # Attack pattern detection state
+        self.port_scan_tracker = defaultdict(lambda: {'ports': set(), 'count': 0, 'last_time': 0})
+        self.brute_force_tracker = defaultdict(lambda: {'attempts': 0, 'last_time': 0})
+        self.http_flood_tracker = defaultdict(lambda: {'requests': 0, 'last_time': 0})
+        self.malformed_tracker = defaultdict(lambda: {'count': 0, 'last_time': 0})
+        
+        # Detection thresholds
+        self.PORT_SCAN_THRESHOLD = 5  # Different ports from same IP
+        self.BRUTE_FORCE_THRESHOLD = 3  # Failed login attempts
+        self.HTTP_FLOOD_THRESHOLD = 10  # Rapid HTTP requests per second
+        self.MALFORMED_THRESHOLD = 2  # Unusual packet patterns
+        
         # Load model and preprocessors
         self._load_model()
         self._load_preprocessors()
@@ -94,6 +106,93 @@ class RealtimeNIDSSystem:
             logger.error(f"Failed to load model: {e}")
             self.model = QABNN()
     
+    def _detect_attack_patterns(self, flow_features):
+        """Detect specific attack patterns and return attack info if found"""
+        src_ip = flow_features.get('src_ip', 'Unknown')
+        dst_port = int(flow_features.get('dst_port', 0))
+        proto = str(flow_features.get('proto', ''))
+        current_time = time.time()
+        
+        # Port Scanning Detection
+        if dst_port not in [80, 443, 53, 22, 21, 25, 110, 143]:  # Skip common ports
+            self.port_scan_tracker[src_ip]['ports'].add(dst_port)
+            self.port_scan_tracker[src_ip]['count'] += 1
+            self.port_scan_tracker[src_ip]['last_time'] = current_time
+            
+            # Clean old entries (older than 60 seconds)
+            for ip in list(self.port_scan_tracker.keys()):
+                if current_time - self.port_scan_tracker[ip]['last_time'] > 60:
+                    del self.port_scan_tracker[ip]
+            
+            if len(self.port_scan_tracker[src_ip]['ports']) >= self.PORT_SCAN_THRESHOLD:
+                return {
+                    'is_attack': True,
+                    'attack_type': 'Port Scanning',
+                    'severity': 8,
+                    'confidence': 90.0,
+                    'explanation': f"🚨 Port scan detected: {len(self.port_scan_tracker[src_ip]['ports'])} ports probed from {src_ip}"
+                }
+        
+        # Brute Force Detection (FTP, SSH, etc.)
+        if dst_port in [21, 22, 23, 25, 110, 143, 993, 995]:  # Common service ports
+            self.brute_force_tracker[f"{src_ip}:{dst_port}"]['attempts'] += 1
+            self.brute_force_tracker[f"{src_ip}:{dst_port}"]['last_time'] = current_time
+            
+            # Clean old entries
+            for key in list(self.brute_force_tracker.keys()):
+                if current_time - self.brute_force_tracker[key]['last_time'] > 300:  # 5 minutes
+                    del self.brute_force_tracker[key]
+            
+            if self.brute_force_tracker[f"{src_ip}:{dst_port}"]['attempts'] >= self.BRUTE_FORCE_THRESHOLD:
+                service_name = {21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 110: 'POP3', 143: 'IMAP'}.get(dst_port, f'Port {dst_port}')
+                return {
+                    'is_attack': True,
+                    'attack_type': f'Brute Force ({service_name})',
+                    'severity': 9,
+                    'confidence': 95.0,
+                    'explanation': f"🔐 Brute force attack: {self.brute_force_tracker[f'{src_ip}:{dst_port}']['attempts']} attempts to {service_name} from {src_ip}"
+                }
+        
+        # HTTP Flood Detection
+        if dst_port == 80 or dst_port == 443:
+            self.http_flood_tracker[src_ip]['requests'] += 1
+            self.http_flood_tracker[src_ip]['last_time'] = current_time
+            
+            # Clean old entries (1 second window)
+            for ip in list(self.http_flood_tracker.keys()):
+                if current_time - self.http_flood_tracker[ip]['last_time'] > 1:
+                    del self.http_flood_tracker[ip]
+            
+            if self.http_flood_tracker[src_ip]['requests'] >= self.HTTP_FLOOD_THRESHOLD:
+                protocol = 'HTTPS' if dst_port == 443 else 'HTTP'
+                return {
+                    'is_attack': True,
+                    'attack_type': f'{protocol} Flood',
+                    'severity': 7,
+                    'confidence': 85.0,
+                    'explanation': f"🌊 {protocol} flood detected: {self.http_flood_tracker[src_ip]['requests']} requests/sec from {src_ip}"
+                }
+        
+        # Malformed Packet Detection (basic heuristics)
+        sbytes = int(flow_features.get('sbytes', 0))
+        dbytes = int(flow_features.get('dbytes', 0))
+        
+        # Check for unusual packet sizes or patterns
+        if sbytes > 10000 or dbytes > 10000:  # Very large packets
+            self.malformed_tracker[src_ip]['count'] += 1
+            self.malformed_tracker[src_ip]['last_time'] = current_time
+            
+            if self.malformed_tracker[src_ip]['count'] >= self.MALFORMED_THRESHOLD:
+                return {
+                    'is_attack': True,
+                    'attack_type': 'Malformed Packets',
+                    'severity': 6,
+                    'confidence': 75.0,
+                    'explanation': f"⚠️ Malformed packets detected: unusual payload sizes from {src_ip}"
+                }
+        
+        return None  # No attack pattern detected
+    
     def _load_preprocessors(self):
         """Load preprocessors for feature scaling"""
         try:
@@ -137,62 +236,78 @@ class RealtimeNIDSSystem:
     def _process_flow(self, flow_features):
         """Process a complete network flow and make prediction"""
         try:
-            # ICMP/Ping Detection: Flag ICMP traffic as suspicious (reconnaissance)
-            proto = str(flow_features.get('proto', ''))
-            is_icmp = proto.lower() in ['icmp', '1']
+            # First, check for known attack patterns
+            attack_pattern = self._detect_attack_patterns(flow_features)
             
-            if is_icmp:
-                # ICMP is often used for reconnaissance/scanning
+            if attack_pattern:
+                # Attack pattern detected - use rule-based detection
                 prediction = 1  # Attack
-                attack_prob = 0.95  # High confidence
-                confidence = 95.0
-                severity = 10
-                xai_explanation = "🎯 ICMP/Ping detected - Reconnaissance attack. ICMP is commonly used for network scanning and probe activities."
+                attack_prob = attack_pattern['confidence'] / 100.0
+                confidence = attack_pattern['confidence']
+                severity = attack_pattern['severity']
+                xai_explanation = attack_pattern['explanation']
+                attack_cat = attack_pattern['attack_type']
             else:
-                # Prepare features for model
-                feature_vector = self._convert_flow_to_features(flow_features)
+                # ICMP/Ping Detection: Flag ICMP traffic as suspicious (reconnaissance)
+                proto = str(flow_features.get('proto', ''))
+                is_icmp = proto.lower() in ['icmp', '1']
                 
-                if feature_vector is None:
-                    return
-                
-                # Make prediction
-                prediction = self.model.predict(np.array([feature_vector]))[0]
-                proba = self.model.predict_proba(np.array([feature_vector]))[0]
-                
-                # Get attack probability
-                attack_prob = proba[1]
-                confidence = max(proba) * 100
-                severity = self._calculate_severity(flow_features, prediction, attack_prob)
-                
-                # Generate XAI explanation for attacks
-                xai_explanation = ""
-                if prediction == 1 and self.explainer:
-                    try:
-                        explanation = self.explainer.explain_prediction(
-                            np.array([feature_vector]),
-                            sample_metadata=flow_features
-                        )
-                        # Extract top features contributing to attack classification
-                        if 'top_features' in explanation:
-                            top_features = explanation['top_features'][:3]
-                            reasons = [f"{f['feature']}" for f in top_features]
-                            xai_explanation = f"Key indicators: {', '.join(reasons)}"
-                        if 'reason' in explanation:
-                            xai_explanation = explanation['reason']
-                    except Exception as e:
-                        xai_explanation = f"Model detected anomalous behavior (Confidence: {confidence:.1f}%)"
-                
-                # Filter: Only flag as attack if it's a high-severity threat
-                # Normal traffic (port 443/HTTPS, 53/DNS, etc.) with low severity is OK
-                if prediction == 1 and severity <= 3:
-                    # This is predicted as attack by model, but low severity
-                    # Check common safe ports/patterns
-                    dst_port = int(flow_features.get('dst_port', 0))
-                    if dst_port in [443, 80, 53, 123, 22]:  # HTTPS, HTTP, DNS, NTP, SSH are common
-                        prediction = 0  # Treat as normal (just network activity)
-                        xai_explanation = ""
-            
-            # Create prediction record
+                if is_icmp:
+                    # ICMP is often used for reconnaissance/scanning
+                    prediction = 1  # Attack
+                    attack_prob = 0.95  # High confidence
+                    confidence = 95.0
+                    severity = 10
+                    xai_explanation = "🎯 ICMP/Ping detected - Reconnaissance attack. ICMP is commonly used for network scanning and probe activities."
+                    attack_cat = "Reconnaissance"
+                else:
+                    # Prepare features for model
+                    feature_vector = self._convert_flow_to_features(flow_features)
+                    
+                    if feature_vector is None:
+                        return
+                    
+                    # Make prediction
+                    prediction = self.model.predict(np.array([feature_vector]))[0]
+                    proba = self.model.predict_proba(np.array([feature_vector]))[0]
+                    
+                    # Get attack probability
+                    attack_prob = proba[1]
+                    confidence = max(proba) * 100
+                    severity = self._calculate_severity(flow_features, prediction, attack_prob)
+                    
+                    # Generate XAI explanation for attacks
+                    xai_explanation = ""
+                    if prediction == 1 and self.explainer:
+                        try:
+                            explanation = self.explainer.explain_prediction(
+                                np.array([feature_vector]),
+                                sample_metadata=flow_features
+                            )
+                            # Extract top features contributing to attack classification
+                            if 'top_features' in explanation:
+                                top_features = explanation['top_features'][:3]
+                                reasons = [f"{f['feature']}" for f in top_features]
+                                xai_explanation = f"Key indicators: {', '.join(reasons)}"
+                            if 'reason' in explanation:
+                                xai_explanation = explanation['reason']
+                        except Exception as e:
+                            xai_explanation = f"Model detected anomalous behavior (Confidence: {confidence:.1f}%)"
+                    
+                    # Filter: Only flag as attack if it's a high-severity threat
+                    # Normal traffic (port 443/HTTPS, 53/DNS, etc.) with low severity is OK
+                    if prediction == 1 and severity <= 3:
+                        # This is predicted as attack by model, but low severity
+                        # Check common safe ports/patterns
+                        dst_port = int(flow_features.get('dst_port', 0))
+                        if dst_port in [443, 80, 53, 123, 22]:  # HTTPS, HTTP, DNS, NTP, SSH are common
+                            prediction = 0  # Treat as normal (just network activity)
+                            xai_explanation = ""
+                            attack_cat = "Normal Traffic"
+                        else:
+                            attack_cat = "Suspicious Activity"
+                    else:
+                        attack_cat = "Anomaly" if prediction == 1 else "Normal Traffic"
             pred_record = {
                 'timestamp': datetime.now().isoformat(),
                 'src_ip': flow_features.get('src_ip', 'Unknown'),
@@ -209,8 +324,8 @@ class RealtimeNIDSSystem:
                 'prediction': 'Attack' if prediction == 1 else 'Normal',
                 'confidence': round(confidence, 2),
                 'attack_probability': round(float(attack_prob), 4),
-                'severity_score': severity if is_icmp else 0 if prediction == 0 else severity,
-                'attack_cat': 'Reconnaissance' if is_icmp else ('Probe' if prediction == 1 else 'Normal Traffic'),
+                'severity_score': severity if prediction == 1 else 0,
+                'attack_cat': attack_cat,
                 'state': 'FIN' if prediction == 1 else 'EST',
                 'xai_explanation': xai_explanation if prediction == 1 else ""
             }
@@ -351,7 +466,12 @@ class RealtimeNIDSSystem:
     def stop_capture(self):
         """Stop live packet capture"""
         self.is_capturing = False
-        logger.info("✓ Packet capture stopped")
+        # Reset attack pattern trackers
+        self.port_scan_tracker.clear()
+        self.brute_force_tracker.clear()
+        self.http_flood_tracker.clear()
+        self.malformed_tracker.clear()
+        logger.info("✓ Packet capture stopped and attack trackers reset")
         return "Stopped"
     
     def get_statistics(self):
