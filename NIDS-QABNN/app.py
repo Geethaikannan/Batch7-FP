@@ -55,6 +55,7 @@ def index():
     live_data = nids_system.live_predictions[-20:] if nids_system.live_predictions else []
     recent_normals = nids_system.get_recent_normal(100)
     recent_attacks = nids_system.get_recent_attacks(100)
+    active_alerts = nids_system.get_active_alerts(20)
     
     session['recent_normals'] = recent_normals
     session['recent_attacks'] = recent_attacks
@@ -68,7 +69,8 @@ def index():
         realtime_nids=nids_system.is_capturing,
         nids_stats=nids_system.get_statistics(),
         recent_normals=recent_normals,
-        recent_attacks=recent_attacks
+        recent_attacks=recent_attacks,
+        active_alerts=active_alerts
     )
 
 @app.route('/live-data')
@@ -106,6 +108,18 @@ def api_live_predictions():
     predictions = nids_system.live_predictions[-limit:]
     serialized = [nids_system._serialize_record(p) for p in predictions]
     return jsonify({'data': serialized})
+
+@app.route('/api/alerts')
+def api_alerts():
+    """Get active alerts"""
+    limit = request.args.get('limit', 20, type=int)
+    return jsonify({'data': nids_system.get_active_alerts(limit)})
+
+@app.route('/api/alerts/<alert_id>/dismiss', methods=['POST'])
+def dismiss_alert(alert_id):
+    """Dismiss an alert"""
+    nids_system.dismiss_alert(alert_id)
+    return jsonify({'status': 'success', 'message': 'Alert dismissed'})
 
 if __name__ == "__main__":
     app.run(debug=True)

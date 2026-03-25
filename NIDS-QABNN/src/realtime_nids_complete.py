@@ -56,11 +56,17 @@ class RealtimeNIDSSystem:
         self.http_flood_tracker = defaultdict(lambda: {'requests': 0, 'last_time': 0})
         self.malformed_tracker = defaultdict(lambda: {'count': 0, 'last_time': 0})
         
+        # Alerts system for data uploads and large transfers
+        self.alerts = []  # List of active alerts
+        self.max_alerts = 50  # Maximum alerts to keep
+        
         # Detection thresholds
         self.PORT_SCAN_THRESHOLD = 5  # Different ports from same IP
         self.BRUTE_FORCE_THRESHOLD = 3  # Failed login attempts
         self.HTTP_FLOOD_THRESHOLD = 10  # Rapid HTTP requests per second
         self.MALFORMED_THRESHOLD = 2  # Unusual packet patterns
+        self.LARGE_UPLOAD_THRESHOLD = 50000  # 50KB for large data detection
+        self.DATA_TRANSFER_THRESHOLD = 100000  # 100KB for significant data transfers
         
         # Load model and preprocessors
         self._load_model()
@@ -193,6 +199,60 @@ class RealtimeNIDSSystem:
         
         return None  # No attack pattern detected
     
+    def _detect_large_data_transfer(self, flow_features):
+        """Detect large data transfers that might indicate file uploads or data exfiltration"""
+        src_ip = flow_features.get('src_ip', 'Unknown')
+        dst_ip = flow_features.get('dst_ip', 'Unknown')
+        dst_port = int(flow_features.get('dst_port', 0))
+        sbytes = int(flow_features.get('sbytes', 0))
+        dbytes = int(flow_features.get('dbytes', 0))
+        proto = str(flow_features.get('proto', ''))
+        
+        total_bytes = sbytes + dbytes
+        
+        # Check for large data transfers
+        if total_bytes >= self.LARGE_UPLOAD_THRESHOLD:
+            alert_type = "Data Upload Alert"
+            severity = "Medium"
+            confidence = 85.0
+            
+            # Determine if it's a significant data transfer
+            if total_bytes >= self.DATA_TRANSFER_THRESHOLD:
+                severity = "High"
+                confidence = 95.0
+                alert_type = "Large Data Transfer Alert"
+            
+            # Create alert record
+            alert = {
+                'id': f"alert_{int(time.time() * 1000)}",
+                'timestamp': datetime.now().isoformat(),
+                'type': alert_type,
+                'severity': severity,
+                'src_ip': src_ip,
+                'dst_ip': dst_ip,
+                'dst_port': dst_port,
+                'protocol': proto.upper(),
+                'data_size': total_bytes,
+                'data_size_mb': round(total_bytes / (1024 * 1024), 2),
+                'confidence': confidence,
+                'description': f"Large data transfer detected: {round(total_bytes / 1024, 1)} KB from {src_ip} to {dst_ip}:{dst_port}",
+                'action_required': "Monitor for unauthorized data exfiltration or file uploads",
+                'status': 'active'
+            }
+            
+            # Add to alerts list
+            self.alerts.append(alert)
+            
+            # Keep only recent alerts
+            if len(self.alerts) > self.max_alerts:
+                self.alerts = self.alerts[-self.max_alerts:]
+            
+            logger.warning(f"🚨 {alert_type}: {total_bytes} bytes from {src_ip} to {dst_ip}")
+            
+            return alert
+        
+        return None
+    
     def _load_preprocessors(self):
         """Load preprocessors for feature scaling"""
         try:
@@ -236,6 +296,9 @@ class RealtimeNIDSSystem:
     def _process_flow(self, flow_features):
         """Process a complete network flow and make prediction"""
         try:
+            # Check for large data transfers first (alert system)
+            upload_alert = self._detect_large_data_transfer(flow_features)
+            
             # First, check for known attack patterns
             attack_pattern = self._detect_attack_patterns(flow_features)
             
@@ -471,11 +534,13 @@ class RealtimeNIDSSystem:
         self.brute_force_tracker.clear()
         self.http_flood_tracker.clear()
         self.malformed_tracker.clear()
+        # Note: Keep alerts for historical reference
         logger.info("✓ Packet capture stopped and attack trackers reset")
         return "Stopped"
     
     def get_statistics(self):
         """Get current NIDS statistics"""
+        active_alerts = len([a for a in self.alerts if a.get('status') == 'active'])
         return {
             'is_capturing': self.is_capturing,
             'packets_processed': self.packet_count,
@@ -483,6 +548,8 @@ class RealtimeNIDSSystem:
             'attacks_detected': self.detection_count,
             'normal_count': len(self.normal_traffic),
             'attack_count': len(self.attack_traffic),
+            'active_alerts': active_alerts,
+            'total_alerts': len(self.alerts),
             'detection_rate': (self.detection_count / max(1, self.flow_count)) * 100
         }
     
@@ -495,6 +562,19 @@ class RealtimeNIDSSystem:
         """Get recent attack traffic records"""
         records = self.attack_traffic[-limit:]
         return [self._serialize_record(r) for r in records]
+    
+    def get_active_alerts(self, limit=20):
+        """Get active alerts (most recent first)"""
+        active_alerts = [alert for alert in self.alerts if alert.get('status') == 'active']
+        return active_alerts[-limit:][::-1]  # Most recent first
+    
+    def dismiss_alert(self, alert_id):
+        """Dismiss an alert by marking it as resolved"""
+        for alert in self.alerts:
+            if alert.get('id') == alert_id:
+                alert['status'] = 'dismissed'
+                alert['dismissed_at'] = datetime.now().isoformat()
+                break
     
     def _serialize_record(self, record):
         """Convert record to JSON-serializable format"""

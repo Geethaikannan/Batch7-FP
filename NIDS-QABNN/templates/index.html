@@ -206,9 +206,63 @@
             <span style="margin-right: 20px;">🔀 Flows: {{ nids_stats.flows_analyzed }}</span>
             <span style="margin-right: 20px;">🚨 Attacks: <strong style="color: #e74c3c;">{{ nids_stats.attacks_detected }}</strong></span>
             <span style="margin-right: 20px;">📈 Rate: {{ "%.1f"|format(nids_stats.detection_rate) }}%</span>
+            <span style="margin-right: 20px;">🔔 Alerts: <strong style="color: #f39c12;">{{ nids_stats.active_alerts }}</strong></span>
         </div>
         {% endif %}
     </div>
+
+    <!-- ALERTS SECTION -->
+    {% if active_alerts %}
+    <div style="background: linear-gradient(45deg, #ffeaa7, #fab1a0); padding: 20px; margin: 20px 0; border-radius: 10px; border: 3px solid #e17055; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
+        <h2 style="color: #d63031; margin-top: 0; text-align: center;">🚨 ACTIVE ALERTS - IMMEDIATE ATTENTION REQUIRED</h2>
+        
+        {% for alert in active_alerts %}
+        <div style="background: white; border: 2px solid {% if alert.severity == 'High' %}#e74c3c{% elif alert.severity == 'Medium' %}#f39c12{% else %}#3498db{% endif %}; 
+                    border-radius: 8px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.5em;">{% if alert.severity == 'High' %}🔴{% elif alert.severity == 'Medium' %}🟠{% else %}🟡{% endif %}</span>
+                    <strong style="font-size: 1.2em; color: {% if alert.severity == 'High' %}#e74c3c{% elif alert.severity == 'Medium' %}#f39c12{% else %}#3498db{% endif %};">{{ alert.type }}</strong>
+                    <span style="background: {% if alert.severity == 'High' %}#e74c3c{% elif alert.severity == 'Medium' %}#f39c12{% else %}#3498db{% endif %}; 
+                                 color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
+                        {{ alert.severity }} PRIORITY
+                    </span>
+                </div>
+                <button onclick="dismissAlert('{{ alert.id }}')" style="background: #95a5a6; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕ Dismiss</button>
+            </div>
+            
+            <div style="font-size: 1.1em; margin: 10px 0; color: #2c3e50;">
+                <strong>{{ alert.description }}</strong>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                    <strong>📤 Source:</strong> {{ alert.src_ip }}
+                </div>
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                    <strong>📥 Destination:</strong> {{ alert.dst_ip }}:{{ alert.dst_port }}
+                </div>
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                    <strong>📊 Data Size:</strong> {{ alert.data_size_mb }} MB ({{ alert.data_size }} bytes)
+                </div>
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                    <strong>🔗 Protocol:</strong> {{ alert.protocol }}
+                </div>
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                    <strong>⏰ Time:</strong> {{ alert.timestamp[11:19] if alert.timestamp else 'Unknown' }}
+                </div>
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                    <strong>🎯 Confidence:</strong> {{ alert.confidence }}%
+                </div>
+            </div>
+            
+            <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 10px; margin-top: 15px;">
+                <strong>⚠️ Action Required:</strong> {{ alert.action_required }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
 
 
 
@@ -368,6 +422,30 @@
                 xaiDiv.style.display = isHidden ? 'block' : 'none';
                 const icon = element.querySelector('.expandable-icon');
                 icon.textContent = isHidden ? '▲' : '▼';
+            }
+        }
+
+        function dismissAlert(alertId) {
+            if (confirm('Are you sure you want to dismiss this alert?')) {
+                fetch(`/api/alerts/${alertId}/dismiss`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        // Reload the page to update alerts
+                        location.reload();
+                    } else {
+                        alert('Failed to dismiss alert');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error dismissing alert:', error);
+                    alert('Error dismissing alert');
+                });
             }
         }
 
