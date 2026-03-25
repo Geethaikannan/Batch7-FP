@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>NIDS – QABNN Dashboard</title>
+    <title>NIDS – QABNN Dashboard with XAI</title>
     <style>
         body {
             font-family: Arial;
@@ -10,7 +10,7 @@
         }
 
         .container {
-            width: 60%;
+            width: 90%;
             margin: 40px auto;
             background: white;
             padding: 30px;
@@ -48,36 +48,337 @@
             font-size: 16px;
             cursor: pointer;
             margin-top: 15px;
+            background: linear-gradient(45deg, #3498db, #2980b9);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            transition: all 0.3s;
+        }
+        button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(52,152,219,0.4);
+        }
+
+        .sample-row {
+            cursor: pointer;
+            position: relative;
+        }
+
+        .sample-row:hover {
+            background-color: #f0f0f0;
+        }
+
+        .expandable-icon {
+            display: inline-block;
+            width: 20px;
+            text-align: center;
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        .xai-explanation {
+            display: block;
+            background-color: #f9f9f9;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin-top: 10px;
+            border-radius: 4px;
+            text-align: left;
+            font-size: 0.9em;
+        }
+
+        .xai-explanation.hidden {
+            display: none;
+        }
+
+        .xai-explanation.visible {
+            display: block;
+        }
+
+        .xai-header {
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .xai-confidence {
+            background-color: #e8f4f8;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 8px 0;
+        }
+
+        .xai-confidence-bar {
+            background-color: #ddd;
+            border-radius: 4px;
+            height: 20px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+
+        .xai-confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #27ae60, #2ecc71);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 0.8em;
+        }
+
+        .xai-features {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 8px 0;
+        }
+
+        .xai-feature-item {
+            padding: 5px;
+            margin: 3px 0;
+            background-color: white;
+            border-left: 3px solid #3498db;
+            padding-left: 10px;
+        }
+
+        .xai-reasoning {
+            background-color: #fffacd;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 8px 0;
+            border-left: 3px solid #f39c12;
+            font-style: italic;
+        }
+
+        .attack-badge {
+            background-color: #e74c3c;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+
+        .normal-badge {
+            background-color: #27ae60;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+
+        table td:nth-child(8) { font-weight: bold; }
+        table td:nth-child(8):after {
+            content: '';
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-left: 5px;
+            background: hsl(120, 50%, 40%);
         }
     </style>
 </head>
 <body>
 
-<h1>Network Intrusion Detection System (QABNN)</h1>
+<h1>Network Intrusion Detection System (QABNN) with XAI</h1>
 
 <div class="container">
 
-    <div class="step">1️⃣ Packet Captured</div>
-    <div class="step">2️⃣ Feature Extraction</div>
-    <div class="step">3️⃣ Data Preprocessing</div>
-    <div class="step">4️⃣ Model Prediction</div>
-    <div class="step">5️⃣ Alert Generation</div>
+<form method="POST" style="display: inline;">
+            <button type="submit" name="toggle_live" value="true" style="{% if realtime_nids %}background: #e74c3c;{% else %}background: #27ae60;{% endif %} color: white;">{{ '🛑 STOP LIVE MONITORING' if realtime_nids else '▶️ START LIVE MONITORING' }}</button>
+        </form>
 
-    <form method="POST">
-        <button type="submit">Run Detection</button>
-    </form>
+    <div style="background: {% if realtime_nids %}#fff3cd;{% else %}#d4edda;{% endif %} padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 5px solid {% if realtime_nids %}#ff9800;{% else %}#4caf50;{% endif %}">
+        <strong>Live Status: </strong> 
+        {% if realtime_nids %}
+            🔴 <span style="color: #e74c3c; font-weight: bold;">MONITORING ACTIVE</span> 
+        {% else %}
+            ⚪ <span style="color: #27ae60; font-weight: bold;">IDLE</span>
+        {% endif %}
+        
+        {% if nids_stats %}
+        <div style="margin-top: 10px; font-size: 0.95em;">
+            <span style="margin-right: 20px;">📊 Packets: {{ nids_stats.packets_processed }}</span>
+            <span style="margin-right: 20px;">🔀 Flows: {{ nids_stats.flows_analyzed }}</span>
+            <span style="margin-right: 20px;">🚨 Attacks: <strong style="color: #e74c3c;">{{ nids_stats.attacks_detected }}</strong></span>
+            <span style="margin-right: 20px;">📈 Rate: {{ "%.1f"|format(nids_stats.detection_rate) }}%</span>
+        </div>
+        {% endif %}
+    </div>
+
+
 
     {% if prediction %}
+    <div class="result normal">
+        {{ prediction }}
+    </div>
+    {% endif %}
+    
+    {% if live_data %}
+    <div style="background: #e3f2fd; padding: 15px; margin: 10px 0; border-radius: 5px; border: 2px solid #2196F3;">
+        <h3>🔴 Live Predictions (Real-Time Network Analysis)</h3>
+        <table border="1" style="width: 100%; border-collapse: collapse;">
+            <tr style="background: #1976d2; color: white;">
+                <th>Timestamp</th>
+                <th>Source IP</th>
+                <th>Dest IP</th>
+                <th>Protocol</th>
+                <th>Prediction</th>
+                <th>Confidence</th>
+                <th>Severity</th>
+            </tr>
+            {% for data in live_data %}
+            <tr style="{% if data.prediction == 'Attack' %}background: #ffebee;{% else %}background: #f1f8e9;{% endif %}">
+                <td>{{ data.timestamp }}</td>
+                <td style="font-family: monospace; font-size: 0.9em;">{{ data.src_ip }}:{{ data.src_port }}</td>
+                <td style="font-family: monospace; font-size: 0.9em;">{{ data.dst_ip }}:{{ data.dst_port }}</td>
+                <td>{{ data.proto }}</td>
+                <td style="font-weight: bold; {% if data.prediction == 'Attack' %}color: #e74c3c;{% else %}color: #27ae60;{% endif %}">
+                    {% if data.prediction == 'Attack' %}🚨 ATTACK{% else %}✓ NORMAL{% endif %}
+                </td>
+                <td>{{ data.confidence }}%</td>
+                <td><strong>{{ data.severity_score }}/10</strong></td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+
+    {% if current_sample %}
         <div class="result 
-            {% if prediction == 'Normal Traffic' %}
+            {% if current_sample.pred == 'Normal' %}
                 normal
             {% else %}
                 attack
             {% endif %}
         ">
-            {{ prediction }}
+            Current: {{ current_sample.pred }} (True: {{ current_sample.true }}) | Proto: {{ current_sample.proto }} | Attack Cat: {{ current_sample.attack_cat }}
         </div>
     {% endif %}
+    
+    <div style="display: flex; justify-content: space-between; margin-top: 30px; gap: 20px;">
+        <div style="flex: 1; background: #e8f5e8; padding: 15px; border-radius: 8px; border: 2px solid #4caf50;">
+            <h3>✓ Recent Normal Traffic ({{ recent_normals|length }})</h3>
+            {% if recent_normals %}
+            <div style="max-height: 600px; overflow-y: auto;">
+                {% for sample in recent_normals %}
+                <div style="border: 1px solid #d4edda; margin: 10px 0; border-radius: 4px; padding: 10px; background: white;">
+                    <div class="sample-row" onclick="toggleXAI(this)">
+                        <span class="expandable-icon">▼</span>
+                        <strong>{{ sample.src_ip }}: {{ sample.src_port }}</strong> → 
+                        <strong>{{ sample.dst_ip }}: {{ sample.dst_port }}</strong>
+                        <span class="normal-badge">NORMAL</span>
+                        <div style="float: right; font-weight: bold;">Score: {% if sample.severity_score %}{{ sample.severity_score }}{% else %}{{ sample.attack_cat if sample.attack_cat else 'N/A' }}{% endif %}</div>
+                    </div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        Proto: {{ sample.proto if sample.proto else sample.service }} | 
+                        Bytes: ↑{{ sample.sbytes if sample.sbytes else sample.dbytes }}B | 
+                        Time: <span style="font-family: monospace;">{{ sample.timestamp[:19] if sample.timestamp else sample.state }}</span>
+                    </div>
+                    {% if sample.xai_explanation %}
+                    <div class="xai-explanation">
+                        <div class="xai-header">🔍 XAI Explanation - Why NORMAL Traffic?</div>
+                        
+                        <div class="xai-confidence">
+                            <strong>Confidence Level:</strong> {{ sample.xai_explanation.confidence_percentage if sample.xai_explanation.confidence_percentage else sample.confidence }}%
+                            <div class="xai-confidence-bar">
+                                <div class="xai-confidence-fill" style="width: {{ sample.xai_explanation.confidence_percentage if sample.xai_explanation.confidence_percentage else sample.confidence }}%;">
+                                    {{ sample.xai_explanation.confidence_percentage if sample.xai_explanation.confidence_percentage else sample.confidence }}%
+                                </div>
+                            </div>
+                        </div>
+
+                        {% if sample.xai_explanation.top_discriminative_features %}
+                        <div class="xai-features">
+                            <strong>Key Indicators Supporting NORMAL Classification:</strong>
+                            {% for feature in sample.xai_explanation.top_discriminative_features[:3] %}
+                            <div class="xai-feature-item">
+                                📊 <strong>{{ feature.feature }}</strong> - Distance to Normal: {{ feature.distance_to_normal }}, Distance to Attack: {{ feature.distance_to_attack }}
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <div class="xai-reasoning">
+                            <strong>📝 Reasoning:</strong> {{ sample.xai_explanation.reasoning }}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+                <p>No normal traffic yet</p>
+            {% endif %}
+        </div>
+
+        <div style="flex: 1; background: #f9eaea; padding: 15px; border-radius: 8px; border: 2px solid #e74c3c;">
+            <h3>⚠ Recent Attacks ({{ recent_attacks|length }})</h3>
+            {% if recent_attacks %}
+            <div style="max-height: 600px; overflow-y: auto;">
+                {% for sample in recent_attacks %}
+                <div style="border: 1px solid #f8d7da; margin: 10px 0; border-radius: 4px; padding: 10px; background: white;">
+                    <div class="sample-row" onclick="toggleXAI(this)">
+                        <span class="expandable-icon">▼</span>
+                        <strong>{{ sample.src_ip }}: {{ sample.src_port }}</strong> → 
+                        <strong>{{ sample.dst_ip }}: {{ sample.dst_port }}</strong>
+                        <span class="attack-badge">ATTACK</span>
+                        <div style="float: right; font-weight: bold; color: #e74c3c;">Score: {% if sample.severity_score %}{{ sample.severity_score }}{% else %}{{ sample.attack_cat if sample.attack_cat else 'N/A' }}{% endif %}/10</div>
+                    </div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        Type: {{ sample.attack_cat if sample.attack_cat else 'Unknown' }} | 
+                        Proto: {{ sample.proto if sample.proto else sample.service }} | 
+                        Time: <span style="font-family: monospace;">{{ sample.timestamp[:19] if sample.timestamp else sample.state }}</span>
+                    </div>
+                    {% if sample.xai_explanation and sample.xai_explanation != "" %}
+                    <div class="xai-explanation" style="display: none; margin-top: 10px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                        <div style="font-weight: bold; color: #856404; margin-bottom: 8px;">🔍 XAI Explanation - Why ATTACK Traffic?</div>
+                        <div style="color: #856404; font-size: 0.9em; line-height: 1.6;">
+                            {{ sample.xai_explanation }}
+                        </div>
+                        <div style="margin-top: 8px; color: #856404; font-size: 0.85em;">
+                            <strong>Detection Confidence:</strong> {{ sample.confidence }}% | 
+                            <strong>Severity Level:</strong> {{ sample.severity_score }}/10
+                        </div>
+                    </div>
+                    {% else %}
+                    <div style="background-color: #ffe6e6; padding: 8px; border-radius: 4px; margin-top: 8px; border-left: 3px solid #e74c3c;">
+                        <strong>Attack Category:</strong> {{ sample.attack_cat if sample.attack_cat else 'Unknown' }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+                <p>No attacks yet</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        function toggleXAI(element) {
+            const parent = element.parentElement;
+            const xaiDiv = parent.querySelector('.xai-explanation');
+            if (xaiDiv) {
+                const isHidden = xaiDiv.style.display === 'none' || !xaiDiv.style.display;
+                xaiDiv.style.display = isHidden ? 'block' : 'none';
+                const icon = element.querySelector('.expandable-icon');
+                icon.textContent = isHidden ? '▲' : '▼';
+            }
+        }
+
+        if ({{ realtime_nids | default(false) }}) {
+            const eventSource = new EventSource('/live-data');
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                console.log('Live prediction:', data);
+            };
+        }
+    </script>
 
 </div>
 

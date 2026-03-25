@@ -1,7 +1,7 @@
 import numpy as np
 
 class QABNN:
-    def __init__(self, threshold=0):
+    def __init__(self, threshold=10.50):
         self.normal_proto = None
         self.attack_proto = None
         self.threshold = threshold
