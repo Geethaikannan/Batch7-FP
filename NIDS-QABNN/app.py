@@ -75,7 +75,8 @@ def live_data():
         while nids_system.is_capturing:
             if nids_system.live_predictions:
                 data = nids_system.live_predictions[-1]
-                yield f"data: {json.dumps(data)}\n\n"
+                serialized = nids_system._serialize_record(data)
+                yield f"data: {json.dumps(serialized)}\n\n"
             time.sleep(1)
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
@@ -88,19 +89,21 @@ def api_stats():
 def api_recent_normal():
     """Get recent normal traffic"""
     limit = request.args.get('limit', 50, type=int)
-    return jsonify(nids_system.get_recent_normal(limit))
+    return jsonify({'data': nids_system.get_recent_normal(limit)})
 
 @app.route('/api/recent-attacks')
 def api_recent_attacks():
     """Get recent attack traffic"""
     limit = request.args.get('limit', 50, type=int)
-    return jsonify(nids_system.get_recent_attacks(limit))
+    return jsonify({'data': nids_system.get_recent_attacks(limit)})
 
 @app.route('/api/live-predictions')
 def api_live_predictions():
     """Get recent live predictions"""
     limit = request.args.get('limit', 50, type=int)
-    return jsonify(nids_system.live_predictions[-limit:])
+    predictions = nids_system.live_predictions[-limit:]
+    serialized = [nids_system._serialize_record(p) for p in predictions]
+    return jsonify({'data': serialized})
 
 if __name__ == "__main__":
     app.run(debug=True)

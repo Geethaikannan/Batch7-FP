@@ -202,12 +202,16 @@ class RealtimeNIDSSystem:
                 'proto': flow_features.get('proto', '-'),
                 'service': flow_features.get('service', '-'),
                 'duration': flow_features.get('dur', 0),
+                'sbytes': int(flow_features.get('sbytes', 0)),
+                'dbytes': int(flow_features.get('dbytes', 0)),
                 'src_bytes': int(flow_features.get('sbytes', 0)),
                 'dst_bytes': int(flow_features.get('dbytes', 0)),
                 'prediction': 'Attack' if prediction == 1 else 'Normal',
                 'confidence': round(confidence, 2),
                 'attack_probability': round(float(attack_prob), 4),
                 'severity_score': severity if is_icmp else 0 if prediction == 0 else severity,
+                'attack_cat': 'Reconnaissance' if is_icmp else ('Probe' if prediction == 1 else 'Normal Traffic'),
+                'state': 'FIN' if prediction == 1 else 'EST',
                 'xai_explanation': xai_explanation if prediction == 1 else ""
             }
             
@@ -364,11 +368,37 @@ class RealtimeNIDSSystem:
     
     def get_recent_normal(self, limit=50):
         """Get recent normal traffic records"""
-        return self.normal_traffic[-limit:]
+        records = self.normal_traffic[-limit:]
+        return [self._serialize_record(r) for r in records]
     
     def get_recent_attacks(self, limit=50):
         """Get recent attack traffic records"""
-        return self.attack_traffic[-limit:]
+        records = self.attack_traffic[-limit:]
+        return [self._serialize_record(r) for r in records]
+    
+    def _serialize_record(self, record):
+        """Convert record to JSON-serializable format"""
+        return {
+            'timestamp': str(record.get('timestamp', '')),
+            'src_ip': str(record.get('src_ip', 'Unknown')),
+            'dst_ip': str(record.get('dst_ip', 'Unknown')),
+            'src_port': int(record.get('src_port', 0)),
+            'dst_port': int(record.get('dst_port', 0)),
+            'proto': str(record.get('proto', '-')),
+            'service': str(record.get('service', '-')),
+            'duration': int(record.get('duration', 0)),
+            'sbytes': int(record.get('sbytes', 0)),
+            'dbytes': int(record.get('dbytes', 0)),
+            'src_bytes': int(record.get('src_bytes', 0)),
+            'dst_bytes': int(record.get('dst_bytes', 0)),
+            'prediction': str(record.get('prediction', 'Unknown')),
+            'confidence': float(record.get('confidence', 0)),
+            'attack_probability': float(record.get('attack_probability', 0)),
+            'severity_score': int(record.get('severity_score', 0)),
+            'attack_cat': str(record.get('attack_cat', 'Unknown')),
+            'state': str(record.get('state', 'EST')),
+            'xai_explanation': str(record.get('xai_explanation', ''))
+        }
 
 
 # Global instance
