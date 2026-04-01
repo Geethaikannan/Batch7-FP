@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import pickle
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
@@ -20,6 +21,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TRAIN_PATH = os.path.join(BASE_DIR, "data", "UNSW_NB15_training-set.csv")
 TEST_PATH = os.path.join(BASE_DIR, "data", "UNSW_NB15_testing-set.csv")
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+MODEL_PATH = os.path.join(MODEL_DIR, "qabnn_model.pkl")
+PREPROCESSORS_PATH = os.path.join(MODEL_DIR, "preprocessors.pkl")
 
 
 def main():
@@ -27,8 +31,8 @@ def main():
     train_df, test_df = load_data(TRAIN_PATH, TEST_PATH)
 
     print("Preprocessing...")
-    X_train, y_train = preprocess_data(train_df)
-    X_test, y_test = preprocess_data(test_df)
+    X_train, y_train, encoders, scaler = preprocess_data(train_df, fit=True)
+    X_test, y_test = preprocess_data(test_df, encoders=encoders, scaler=scaler, fit=False)
 
     y_train = np.array(y_train)
     y_test = np.array(y_test)
@@ -102,6 +106,20 @@ def main():
     print("\n=== RF Metrics ===")
     for k, v in rf_metrics.items():
         print(k, v)
+
+    # ==========================
+    # Save Models
+    # ==========================
+    print(f"\nSaving QABNN model to {MODEL_PATH}...")
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    with open(MODEL_PATH, 'wb') as f:
+        pickle.dump(qabnn, f)
+    print(f"[OK] Model saved successfully")
+    
+    print(f"Saving preprocessors to {PREPROCESSORS_PATH}...")
+    with open(PREPROCESSORS_PATH, 'wb') as f:
+        pickle.dump({'encoders': encoders, 'scaler': scaler}, f)
+    print(f"[OK] Preprocessors saved successfully")
 
 
 if __name__ == "__main__":

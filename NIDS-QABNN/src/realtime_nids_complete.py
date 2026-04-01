@@ -30,6 +30,8 @@ class RealtimeNIDSSystem:
                  data_dir="data/realtime"):
         self.model = None
         self.preprocessors = None
+        self.label_encoders = {}  # For categorical feature encoding
+        self.scaler = None         # For feature scaling
         self.model_path = model_path
         self.preprocessors_path = preprocessors_path
         self.data_dir = Path(data_dir)
@@ -68,6 +70,11 @@ class RealtimeNIDSSystem:
         self.LARGE_UPLOAD_THRESHOLD = 50000  # 50KB for large data detection
         self.DATA_TRANSFER_THRESHOLD = 100000  # 100KB for significant data transfers
         
+        # File upload detection state
+        self.file_upload_tracker = defaultdict(lambda: {'count': 0, 'total_bytes': 0, 'last_time': 0})
+        self.FILE_UPLOAD_THRESHOLD = 1024 * 800  # 800KB (0.8MB) threshold for file uploads
+        self.FILE_UPLOAD_PORTS = [80, 443, 21, 22, 139, 445, 3306, 5432]  # Common file transfer ports
+        
         # Load model and preprocessors
         self._load_model()
         self._load_preprocessors()
@@ -85,6 +92,8 @@ class RealtimeNIDSSystem:
                 'ct_flw_http_mthd', 'is_ftp_login', 'ct_ftp_resp'
             ]
             self.explainer = QABNNExplainer(self.model, feature_names=feature_names)
+        
+        logger.info("✓ NIDS System initialized - ready to capture LIVE network traffic")
     
     def _load_model(self):
         """Load or train QABNN model"""
@@ -199,59 +208,165 @@ class RealtimeNIDSSystem:
         
         return None  # No attack pattern detected
     
-    def _detect_large_data_transfer(self, flow_features):
-        """Detect large data transfers that might indicate file uploads or data exfiltration"""
+    def _extract_file_path(self, flow_features):
+        """Extract file path from network flow features if available"""
+        try:
+            # Try to extract from HTTP headers or payload
+            http_method = flow_features.get('http_method', '')
+            http_url = flow_features.get('http_url', '')
+            
+            if http_url:
+                # Extract filename from URL
+                if '/' in http_url:
+                    file_path = http_url.split('/')[-1]
+                    if file_path and len(file_path) > 0:
+                        return file_path
+                return http_url
+            
+            # Try to extract from FTP commands (if available in service field)
+            service = flow_features.get('service', '')
+            if 'ftp' in service.lower():
+                return "[FTP Transfer - filename not captured at flow level]"
+            
+            # Try to extract from SCP/SSH
+            if 'ssh' in service.lower() or 'scp' in service.lower():
+                return "[SSH/SCP Transfer - filename not captured at flow level]"
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Error extracting file path: {e}")
+            return None
+    
+    def _detect_file_upload(self, flow_features):
+        """Detect REAL file uploads - only alert on significant files (>= 1MB)"""
         src_ip = flow_features.get('src_ip', 'Unknown')
         dst_ip = flow_features.get('dst_ip', 'Unknown')
         dst_port = int(flow_features.get('dst_port', 0))
         sbytes = int(flow_features.get('sbytes', 0))
         dbytes = int(flow_features.get('dbytes', 0))
-        proto = str(flow_features.get('proto', ''))
+        proto = str(flow_features.get('proto', 'tcp')).lower()
+        current_time = time.time()
         
         total_bytes = sbytes + dbytes
         
-        # Check for large data transfers
-        if total_bytes >= self.LARGE_UPLOAD_THRESHOLD:
-            alert_type = "Data Upload Alert"
-            severity = "Medium"
-            confidence = 85.0
-            
-            # Determine if it's a significant data transfer
-            if total_bytes >= self.DATA_TRANSFER_THRESHOLD:
-                severity = "High"
-                confidence = 95.0
-                alert_type = "Large Data Transfer Alert"
-            
-            # Create alert record
-            alert = {
-                'id': f"alert_{int(time.time() * 1000)}",
-                'timestamp': datetime.now().isoformat(),
-                'type': alert_type,
-                'severity': severity,
-                'src_ip': src_ip,
-                'dst_ip': dst_ip,
-                'dst_port': dst_port,
-                'protocol': proto.upper(),
-                'data_size': total_bytes,
-                'data_size_mb': round(total_bytes / (1024 * 1024), 2),
-                'confidence': confidence,
-                'description': f"Large data transfer detected: {round(total_bytes / 1024, 1)} KB from {src_ip} to {dst_ip}:{dst_port}",
-                'action_required': "Monitor for unauthorized data exfiltration or file uploads",
-                'status': 'active'
-            }
-            
-            # Add to alerts list
-            self.alerts.append(alert)
-            
-            # Keep only recent alerts
-            if len(self.alerts) > self.max_alerts:
-                self.alerts = self.alerts[-self.max_alerts:]
-            
-            logger.warning(f"🚨 {alert_type}: {total_bytes} bytes from {src_ip} to {dst_ip}")
-            
-            return alert
+        # Check for file uploads based on port only
+        is_file_transfer_port = dst_port in self.FILE_UPLOAD_PORTS
         
-        return None
+        if not is_file_transfer_port:
+            return None
+        
+        # ONLY REAL UPLOADS: Minimum 1MB threshold
+        MIN_UPLOAD_SIZE = 1024 * 1024  # 1MB minimum
+        
+        # Different detection logic for different protocols
+        upload_detected = False
+        upload_size = 0
+        
+        if dst_port == 80 or dst_port == 443:
+            # HTTP/HTTPS: Check client upload data only (sbytes = client->server)
+            # Web uploads usually: client sends file, server sends small response
+            if sbytes >= MIN_UPLOAD_SIZE:
+                upload_detected = True
+                upload_size = sbytes
+                logger.warning(f"🚀 HTTP/HTTPS UPLOAD DETECTED: {sbytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
+        
+        elif dst_port == 21:
+            # FTP: Any significant file transfer
+            if total_bytes >= MIN_UPLOAD_SIZE:
+                upload_detected = True
+                upload_size = total_bytes
+                logger.warning(f"🚀 FTP UPLOAD DETECTED: {total_bytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
+        
+        elif dst_port == 22:
+            # SSH/SCP: Encrypted file transfer
+            if total_bytes >= MIN_UPLOAD_SIZE:
+                upload_detected = True
+                upload_size = total_bytes
+                logger.warning(f"🚀 SSH/SCP UPLOAD DETECTED: {total_bytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
+        
+        elif dst_port in [139, 445]:
+            # SMB: File share access
+            if total_bytes >= MIN_UPLOAD_SIZE:
+                upload_detected = True
+                upload_size = total_bytes
+                logger.warning(f"🚀 SMB UPLOAD DETECTED: {total_bytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
+        
+        elif dst_port in [3306, 5432]:
+            # Database: Data load
+            if sbytes >= MIN_UPLOAD_SIZE:
+                upload_detected = True
+                upload_size = sbytes
+                logger.warning(f"🚀 DB UPLOAD DETECTED: {sbytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
+        
+        if not upload_detected:
+            return None
+        
+        # Track upload
+        tracker_key = f"{src_ip}:{dst_ip}:{dst_port}"
+        self.file_upload_tracker[tracker_key]['count'] += 1
+        self.file_upload_tracker[tracker_key]['total_bytes'] += upload_size
+        self.file_upload_tracker[tracker_key]['last_time'] = current_time
+        
+        # Clean old entries (older than 5 minutes)
+        for key in list(self.file_upload_tracker.keys()):
+            if current_time - self.file_upload_tracker[key]['last_time'] > 300:
+                del self.file_upload_tracker[key]
+        
+        # Determine transfer type and extract file path
+        transfer_type = "Unknown"
+        file_path = self._extract_file_path(flow_features)
+        
+        if dst_port == 80 or dst_port == 443:
+            transfer_type = "HTTP/HTTPS"
+        elif dst_port == 21:
+            transfer_type = "FTP"
+        elif dst_port == 22:
+            transfer_type = "SSH/SCP"
+        elif dst_port in [139, 445]:
+            transfer_type = "SMB"
+        elif dst_port in [3306, 5432]:
+            transfer_type = "Database"
+        
+        # Calculate file size properly
+        file_size_mb = round(upload_size / (1024 * 1024), 2)
+        file_size_kb = round(upload_size / 1024, 2)
+        
+        # Determine severity based on actual file size
+        severity = "Medium"
+        if upload_size >= 10 * 1024 * 1024:  # >= 10MB
+            severity = "High"
+        elif upload_size >= 50 * 1024 * 1024:  # >= 50MB
+            severity = "Critical"
+        
+        file_info = f" ({file_path})" if file_path else ""
+        
+        # Create alert with correct file size
+        alert = {
+            'id': f"upload_{int(time.time() * 1000)}",
+            'timestamp': datetime.now().isoformat(),
+            'type': f"🚀 FILE UPLOAD DETECTED",
+            'severity': severity,
+            'src_ip': src_ip,
+            'dst_ip': dst_ip,
+            'dst_port': dst_port,
+            'protocol': proto.upper(),
+            'transfer_type': transfer_type,
+            'data_size': upload_size,
+            'data_size_kb': file_size_kb,
+            'data_size_mb': file_size_mb,
+            'confidence': 100.0,
+            'file_path': file_path,
+            'description': f"{transfer_type} file upload: {file_size_mb}MB from {src_ip} to {dst_ip}:{dst_port}{file_info}",
+            'action_required': "Review file upload for security",
+            'status': 'active'
+        }
+        
+        self.alerts.append(alert)
+        if len(self.alerts) > self.max_alerts:
+            self.alerts = self.alerts[-self.max_alerts:]
+        
+        logger.warning(f"📊 ALERT CREATED: {file_size_mb}MB file uploaded from {src_ip} to {dst_ip}:{dst_port} via {transfer_type}")
+        return alert
     
     def _load_preprocessors(self):
         """Load preprocessors for feature scaling"""
@@ -259,12 +374,25 @@ class RealtimeNIDSSystem:
             if Path(self.preprocessors_path).exists():
                 logger.info(f"Loading preprocessors from {self.preprocessors_path}")
                 with open(self.preprocessors_path, 'rb') as f:
-                    self.preprocessors = pickle.load(f)
+                    preprocessor_data = pickle.load(f)
                 logger.info("✓ Preprocessors loaded successfully")
+                
+                # Extract encoders and scaler
+                self.label_encoders = preprocessor_data.get('encoders', {})
+                self.scaler = preprocessor_data.get('scaler', None)
+                
+                if self.label_encoders:
+                    logger.info(f"Loaded {len(self.label_encoders)} label encoders")
+                if self.scaler:
+                    logger.info("Scaler loaded successfully")
             else:
                 logger.warning("Preprocessors not found")
+                self.label_encoders = {}
+                self.scaler = None
         except Exception as e:
             logger.error(f"Failed to load preprocessors: {e}")
+            self.label_encoders = {}
+            self.scaler = None
     
     def _get_protocol_string(self, proto_num):
         """Convert protocol number to string"""
@@ -294,126 +422,109 @@ class RealtimeNIDSSystem:
             logger.error(f"Error processing packet: {e}")
     
     def _process_flow(self, flow_features):
-        """Process a complete network flow and make prediction"""
+        """Process flows - Make predictions and populate dashboard data"""
         try:
-            # Check for large data transfers first (alert system)
-            upload_alert = self._detect_large_data_transfer(flow_features)
+            # Check for file uploads first
+            file_upload_alert = self._detect_file_upload(flow_features)
+            if file_upload_alert:
+                logger.warning(f"✅ UPLOAD ALERT: {file_upload_alert['data_size_mb']}MB file detected")
             
-            # First, check for known attack patterns
-            attack_pattern = self._detect_attack_patterns(flow_features)
-            
-            if attack_pattern:
-                # Attack pattern detected - use rule-based detection
-                prediction = 1  # Attack
-                attack_prob = attack_pattern['confidence'] / 100.0
-                confidence = attack_pattern['confidence']
-                severity = attack_pattern['severity']
-                xai_explanation = attack_pattern['explanation']
-                attack_cat = attack_pattern['attack_type']
-            else:
-                # ICMP/Ping Detection: Flag ICMP traffic as suspicious (reconnaissance)
-                proto = str(flow_features.get('proto', ''))
-                is_icmp = proto.lower() in ['icmp', '1']
-                
-                if is_icmp:
-                    # ICMP is often used for reconnaissance/scanning
-                    prediction = 1  # Attack
-                    attack_prob = 0.95  # High confidence
-                    confidence = 95.0
-                    severity = 10
-                    xai_explanation = "🎯 ICMP/Ping detected - Reconnaissance attack. ICMP is commonly used for network scanning and probe activities."
-                    attack_cat = "Reconnaissance"
-                else:
-                    # Prepare features for model
-                    feature_vector = self._convert_flow_to_features(flow_features)
+            # Make prediction using model if available
+            if self.model:
+                try:
+                    # Transform features properly using encoders and scaler
+                    features_array = self._transform_flow_features(flow_features)
                     
-                    if feature_vector is None:
-                        return
-                    
-                    # Make prediction
-                    prediction = self.model.predict(np.array([feature_vector]))[0]
-                    proba = self.model.predict_proba(np.array([feature_vector]))[0]
-                    
-                    # Get attack probability
-                    attack_prob = proba[1]
-                    confidence = max(proba) * 100
-                    severity = self._calculate_severity(flow_features, prediction, attack_prob)
-                    
-                    # Generate XAI explanation for attacks
-                    xai_explanation = ""
-                    if prediction == 1 and self.explainer:
-                        try:
-                            explanation = self.explainer.explain_prediction(
-                                np.array([feature_vector]),
-                                sample_metadata=flow_features
-                            )
-                            # Extract top features contributing to attack classification
-                            if 'top_features' in explanation:
-                                top_features = explanation['top_features'][:3]
-                                reasons = [f"{f['feature']}" for f in top_features]
-                                xai_explanation = f"Key indicators: {', '.join(reasons)}"
-                            if 'reason' in explanation:
-                                xai_explanation = explanation['reason']
-                        except Exception as e:
-                            xai_explanation = f"Model detected anomalous behavior (Confidence: {confidence:.1f}%)"
-                    
-                    # Filter: Only flag as attack if it's a high-severity threat
-                    # Normal traffic (port 443/HTTPS, 53/DNS, etc.) with low severity is OK
-                    if prediction == 1 and severity <= 3:
-                        # This is predicted as attack by model, but low severity
-                        # Check common safe ports/patterns
-                        dst_port = int(flow_features.get('dst_port', 0))
-                        if dst_port in [443, 80, 53, 123, 22]:  # HTTPS, HTTP, DNS, NTP, SSH are common
-                            prediction = 0  # Treat as normal (just network activity)
-                            xai_explanation = ""
-                            attack_cat = "Normal Traffic"
+                    if features_array is not None:
+                        # Get prediction
+                        prediction = self.model.predict(features_array)
+                        prediction_proba = self.model.predict_proba(features_array) if hasattr(self.model, 'predict_proba') else None
+                        
+                        # Determine if attack
+                        is_attack = prediction[0] == 1
+                        
+                        # Calculate confidence: use probability of predicted class
+                        if prediction_proba is not None:
+                            # Get probability of predicted class
+                            if is_attack:
+                                confidence = float(prediction_proba[0][1] * 100)  # Attack probability
+                            else:
+                                confidence = float(prediction_proba[0][0] * 100)  # Normal probability
                         else:
-                            attack_cat = "Suspicious Activity"
+                            confidence = 100.0 if is_attack else 50.0
+                        
+                        confidence = max(50, min(100, confidence))  # Ensure between 50-100
+                        
+                        # Create record
+                        record = {
+                            'timestamp': datetime.now().isoformat(),
+                        'src_ip': flow_features.get('src_ip', 'Unknown'),
+                        'dst_ip': flow_features.get('dst_ip', 'Unknown'),
+                        'src_port': int(flow_features.get('src_port', 0)),
+                        'dst_port': int(flow_features.get('dst_port', 0)),
+                        'proto': flow_features.get('proto', 'tcp'),
+                        'service': flow_features.get('service', '-'),
+                        'duration': int(flow_features.get('dur', 0)),
+                        'sbytes': int(flow_features.get('sbytes', 0)),
+                        'dbytes': int(flow_features.get('dbytes', 0)),
+                        'src_bytes': int(flow_features.get('sbytes', 0)),
+                        'dst_bytes': int(flow_features.get('dbytes', 0)),
+                        'prediction': 'Attack' if is_attack else 'Normal',
+                        'confidence': confidence,
+                        'attack_probability': confidence if is_attack else (100 - confidence),
+                        'severity_score': int((confidence / 10)) if is_attack else 0,
+                        'attack_cat': flow_features.get('attack_cat', 'Unknown'),
+                        'state': flow_features.get('state', 'EST'),
+                        'xai_explanation': ''
+                    }
+                    
+                    # Add to appropriate list
+                    if is_attack:
+                        self.attack_traffic.append(record)
+                        self.detection_count += 1
+                        if len(self.attack_traffic) > self.max_records:
+                            self.attack_traffic = self.attack_traffic[-self.max_records:]
                     else:
-                        attack_cat = "Anomaly" if prediction == 1 else "Normal Traffic"
-            pred_record = {
-                'timestamp': datetime.now().isoformat(),
-                'src_ip': flow_features.get('src_ip', 'Unknown'),
-                'dst_ip': flow_features.get('dst_ip', 'Unknown'),
-                'src_port': flow_features.get('src_port', 0),
-                'dst_port': flow_features.get('dst_port', 0),
-                'proto': flow_features.get('proto', '-'),
-                'service': flow_features.get('service', '-'),
-                'duration': flow_features.get('dur', 0),
-                'sbytes': int(flow_features.get('sbytes', 0)),
-                'dbytes': int(flow_features.get('dbytes', 0)),
-                'src_bytes': int(flow_features.get('sbytes', 0)),
-                'dst_bytes': int(flow_features.get('dbytes', 0)),
-                'prediction': 'Attack' if prediction == 1 else 'Normal',
-                'confidence': round(confidence, 2),
-                'attack_probability': round(float(attack_prob), 4),
-                'severity_score': severity if prediction == 1 else 0,
-                'attack_cat': attack_cat,
-                'state': 'FIN' if prediction == 1 else 'EST',
-                'xai_explanation': xai_explanation if prediction == 1 else ""
-            }
-            
-            # Store in appropriate list
-            if prediction == 1:  # Attack
-                self.attack_traffic.append(pred_record)
-                self.detection_count += 1
-                logger.warning(f"🚨 ATTACK DETECTED: {pred_record['src_ip']} -> {pred_record['dst_ip']}")
-            else:  # Normal
-                self.normal_traffic.append(pred_record)
-            
-            # Keep only recent records
-            if len(self.normal_traffic) > self.max_records:
-                self.normal_traffic = self.normal_traffic[-self.max_records:]
-            if len(self.attack_traffic) > self.max_records:
-                self.attack_traffic = self.attack_traffic[-self.max_records:]
-            
-            # Add to live predictions
-            self.live_predictions.append(pred_record)
-            if len(self.live_predictions) > 50:
-                self.live_predictions = self.live_predictions[-50:]
-            
-            # Save to file (append mode for persistence)
-            self._save_prediction(pred_record)
+                        self.normal_traffic.append(record)
+                        if len(self.normal_traffic) > self.max_records:
+                            self.normal_traffic = self.normal_traffic[-self.max_records:]
+                    
+                    # Add to live predictions
+                    self.live_predictions.append(record)
+                    if len(self.live_predictions) > self.max_records:
+                        self.live_predictions = self.live_predictions[-self.max_records:]
+                    
+                except Exception as e:
+                    logger.debug(f"Error making prediction: {e}")
+            else:
+                # No model available, just store as normal traffic for dashboard display
+                record = {
+                    'timestamp': datetime.now().isoformat(),
+                    'src_ip': flow_features.get('src_ip', 'Unknown'),
+                    'dst_ip': flow_features.get('dst_ip', 'Unknown'),
+                    'src_port': int(flow_features.get('src_port', 0)),
+                    'dst_port': int(flow_features.get('dst_port', 0)),
+                    'proto': flow_features.get('proto', 'tcp'),
+                    'service': flow_features.get('service', '-'),
+                    'duration': int(flow_features.get('dur', 0)),
+                    'sbytes': int(flow_features.get('sbytes', 0)),
+                    'dbytes': int(flow_features.get('dbytes', 0)),
+                    'src_bytes': int(flow_features.get('sbytes', 0)),
+                    'dst_bytes': int(flow_features.get('dbytes', 0)),
+                    'prediction': 'Normal',
+                    'confidence': 50.0,
+                    'attack_probability': 0,
+                    'severity_score': 0,
+                    'attack_cat': 'Unknown',
+                    'state': flow_features.get('state', 'EST'),
+                    'xai_explanation': ''
+                }
+                self.normal_traffic.append(record)
+                self.live_predictions.append(record)
+                if len(self.normal_traffic) > self.max_records:
+                    self.normal_traffic = self.normal_traffic[-self.max_records:]
+                if len(self.live_predictions) > self.max_records:
+                    self.live_predictions = self.live_predictions[-self.max_records:]
         
         except Exception as e:
             logger.error(f"Error processing flow: {e}")
@@ -472,6 +583,88 @@ class RealtimeNIDSSystem:
         
         except Exception as e:
             logger.error(f"Error converting flow to features: {e}")
+            return None
+    
+    def _transform_flow_features(self, flow_features):
+        """Transform raw flow features to properly encoded and scaled format"""
+        try:
+            # Build feature dictionary with all columns
+            feature_dict = {
+                'dur': flow_features.get('dur', 0),
+                'proto': flow_features.get('proto', 'tcp'),  # Categorical
+                'service': flow_features.get('service', '-'),  # Categorical
+                'state': flow_features.get('state', 'CON'),  # Categorical
+                'spkts': flow_features.get('spkts', 0),
+                'dpkts': flow_features.get('dpkts', 0),
+                'sbytes': flow_features.get('sbytes', 0),
+                'dbytes': flow_features.get('dbytes', 0),
+                'rate': flow_features.get('rate', 0),
+                'sttl': flow_features.get('sttl', 254),
+                'dttl': flow_features.get('dttl', 0),
+                'sload': flow_features.get('sload', 0),
+                'dload': flow_features.get('dload', 0),
+                'sloss': flow_features.get('sloss', 0),
+                'dloss': flow_features.get('dloss', 0),
+                'sinpkt': flow_features.get('sinpkt', 0),
+                'dinpkt': flow_features.get('dinpkt', 0),
+                'sjit': flow_features.get('sjit', 0),
+                'djit': flow_features.get('djit', 0),
+                'swin': flow_features.get('swin', 255),
+                'stcpb': flow_features.get('stcpb', 0),
+                'dtcpb': flow_features.get('dtcpb', 0),
+                'dwin': flow_features.get('dwin', 255),
+                'tcprtt': flow_features.get('tcprtt', 0),
+                'synack': flow_features.get('synack', 0),
+                'ackdat': flow_features.get('ackdat', 0),
+                'smean': flow_features.get('smean', 0),
+                'dmean': flow_features.get('dmean', 0),
+                'trans_depth': flow_features.get('trans_depth', 0),
+                'response_body_len': flow_features.get('response_body_len', 0),
+                'ct_srv_src': flow_features.get('ct_srv_src', 1),
+                'ct_state_ttl': flow_features.get('ct_state_ttl', 1),
+                'ct_dst_ltm': flow_features.get('ct_dst_ltm', 1),
+                'ct_src_dport_ltm': flow_features.get('ct_src_dport_ltm', 1),
+                'ct_dst_sport_ltm': flow_features.get('ct_dst_sport_ltm', 1),
+                'ct_dst_src_ltm': flow_features.get('ct_dst_src_ltm', 1),
+                'is_ftp_login': flow_features.get('is_ftp_login', 0),
+                'ct_ftp_cmd': flow_features.get('ct_ftp_cmd', 0),
+                'ct_flw_http_mthd': flow_features.get('ct_flw_http_mthd', 0),
+                'ct_srv_dst': flow_features.get('ct_srv_dst', 1),
+                'is_sm_ips_ports': flow_features.get('is_sm_ips_ports', 0),
+            }
+            
+            # Create a DataFrame for proper encoding
+            df = pd.DataFrame([feature_dict])
+            
+            # Encode categorical features if encoders are available
+            for col in ['proto', 'service', 'state']:
+                if col in self.label_encoders:
+                    try:
+                        # Handle unknown values by using the first class
+                        df[col] = self.label_encoders[col].transform(df[col])
+                    except ValueError:
+                        # Unknown category - use default encoding
+                        df[col] = 0
+                else:
+                    # No encoder available, use numeric encoding
+                    if col == 'proto':
+                        proto_map = {'tcp': 6, 'udp': 17, 'icmp': 1}
+                        df[col] = proto_map.get(df[col].values[0], 6)
+                    else:
+                        df[col] = 0
+            
+            # Get feature array
+            X = df.values
+            
+            # Apply scaler if available
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
+            
+            return X
+        
+        except Exception as e:
+            logger.error(f"Error transforming flow features: {e}")
+            logger.debug(f"Flow features: {flow_features}")
             return None
     
     def _calculate_severity(self, flow_features, prediction, attack_prob):

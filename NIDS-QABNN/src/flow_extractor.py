@@ -87,14 +87,36 @@ class FlowExtractor:
             if flags & 0x01 or flags & 0x04:
                 is_complete = True
         
-        # Timeout-based completion
+        # HTTP/HTTPS upload detection: Complete flow early for ANY upload activity
+        # This allows VERY fast detection of uploads on ports 80/443
+        if (key.dst_port == 80 or key.dst_port == 443):
+            # Complete flow if we see bidirectional traffic with ANY significant client data
+            if flow['sbytes'] > 500 and flow['dpkts'] > 0:
+                # Client sent 500B+, server responded at least once = likely upload complete
+                is_complete = True
+            elif flow['sbytes'] > 100 and flow['dbytes'] >= 100:
+                # Even smaller upload with any response
+                is_complete = True
+        
+        # Timeout-based completion (very short timeout for web traffic to catch small uploads)
         flow_duration = now - flow['start']
-        if flow_duration > self.timeout:
+        timeout_threshold = 10 if (key.dst_port == 80 or key.dst_port == 443) else 30  # Reduced from 30/120 to 10/30
+        if flow_duration > timeout_threshold:
             is_complete = True
         
         # Extract and return features if flow is complete
         if is_complete:
             features = self._extract_features(key, flow, now)
+            # Log flow completion
+            import logging
+            logger = logging.getLogger(__name__)
+            sbytes = flow.get('sbytes', 0)
+            dbytes = flow.get('dbytes', 0)
+            total = sbytes + dbytes
+            if dst_port in [80, 443] and total > 0:
+                logger.debug(f"✔️ HTTP FLOW COMPLETED: {key.src_ip}:{key.src_port} → {key.dst_ip}:{key.dst_port} | {sbytes}B up, {dbytes}B down")
+            elif total > 1000:
+                logger.debug(f"✔️ FLOW COMPLETED: {key.src_ip}:{key.src_port} → {key.dst_ip}:{key.dst_port} | {total}B total")
             del self.flows[key]
             return features
         

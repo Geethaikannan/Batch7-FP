@@ -180,6 +180,68 @@
             margin-left: 5px;
             background: hsl(120, 50%, 40%);
         }
+
+        /* Status indicator classes */
+        .status-active {
+            background: #fff3cd;
+            border-left-color: #ff9800;
+        }
+
+        .status-idle {
+            background: #d4edda;
+            border-left-color: #4caf50;
+        }
+
+        .btn-stop {
+            background: #e74c3c !important;
+        }
+
+        .btn-start {
+            background: #27ae60 !important;
+        }
+
+        .attack-row {
+            background: #ffebee;
+        }
+
+        .normal-row {
+            background: #f1f8e9;
+        }
+
+        .attack-text {
+            color: #e74c3c;
+        }
+
+        .normal-text {
+            color: #27ae60;
+        }
+
+        .severity-high {
+            color: #e74c3c;
+            border-color: #e74c3c;
+        }
+
+        .severity-medium {
+            color: #f39c12;
+            border-color: #f39c12;
+        }
+
+        .severity-low {
+            color: #3498db;
+            border-color: #3498db;
+        }
+
+        .severity-high-bg {
+            background: #e74c3c;
+        }
+
+        .severity-medium-bg {
+            background: #f39c12;
+        }
+
+        .severity-low-bg {
+            background: #3498db;
+        }
     </style>
 </head>
 <body>
@@ -189,10 +251,10 @@
 <div class="container">
 
 <form method="POST" style="display: inline;">
-            <button type="submit" name="toggle_live" value="true" style="{% if realtime_nids %}background: #e74c3c;{% else %}background: #27ae60;{% endif %} color: white;">{{ '🛑 STOP LIVE MONITORING' if realtime_nids else '▶️ START LIVE MONITORING' }}</button>
+            <button type="submit" name="toggle_live" value="true" class="{% if realtime_nids %}btn-stop{% else %}btn-start{% endif %}">{{ '🛑 STOP LIVE MONITORING' if realtime_nids else '▶️ START LIVE MONITORING' }}</button>
         </form>
 
-    <div style="background: {% if realtime_nids %}#fff3cd;{% else %}#d4edda;{% endif %} padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 5px solid {% if realtime_nids %}#ff9800;{% else %}#4caf50;{% endif %}">
+    <div class="{% if realtime_nids %}status-active{% else %}status-idle{% endif %}" style="padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 5px solid;">
         <strong>Live Status: </strong> 
         {% if realtime_nids %}
             🔴 <span style="color: #e74c3c; font-weight: bold;">MONITORING ACTIVE</span> 
@@ -217,14 +279,12 @@
         <h2 style="color: #d63031; margin-top: 0; text-align: center;">🚨 ACTIVE ALERTS - IMMEDIATE ATTENTION REQUIRED</h2>
         
         {% for alert in active_alerts %}
-        <div style="background: white; border: 2px solid {% if alert.severity == 'High' %}#e74c3c{% elif alert.severity == 'Medium' %}#f39c12{% else %}#3498db{% endif %}; 
-                    border-radius: 8px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" class="{% if alert.severity == 'High' %}severity-high{% elif alert.severity == 'Medium' %}severity-medium{% else %}severity-low{% endif %}" style="border: 2px solid;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <span style="font-size: 1.5em;">{% if alert.severity == 'High' %}🔴{% elif alert.severity == 'Medium' %}🟠{% else %}🟡{% endif %}</span>
-                    <strong style="font-size: 1.2em; color: {% if alert.severity == 'High' %}#e74c3c{% elif alert.severity == 'Medium' %}#f39c12{% else %}#3498db{% endif %};">{{ alert.type }}</strong>
-                    <span style="background: {% if alert.severity == 'High' %}#e74c3c{% elif alert.severity == 'Medium' %}#f39c12{% else %}#3498db{% endif %}; 
-                                 color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
+                    <strong style="font-size: 1.2em;" class="{% if alert.severity == 'High' %}severity-high{% elif alert.severity == 'Medium' %}severity-medium{% else %}severity-low{% endif %}">{{ alert.type }}</strong>
+                    <span class="severity-{% if alert.severity == 'High' %}high{% elif alert.severity == 'Medium' %}medium{% else %}low{% endif %}-bg" style="color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
                         {{ alert.severity }} PRIORITY
                     </span>
                 </div>
@@ -286,12 +346,12 @@
                 <th>Severity</th>
             </tr>
             {% for data in live_data %}
-            <tr style="{% if data.prediction == 'Attack' %}background: #ffebee;{% else %}background: #f1f8e9;{% endif %}">
+            <tr class="{% if data.prediction == 'Attack' %}attack-row{% else %}normal-row{% endif %}">
                 <td>{{ data.timestamp }}</td>
                 <td style="font-family: monospace; font-size: 0.9em;">{{ data.src_ip }}:{{ data.src_port }}</td>
                 <td style="font-family: monospace; font-size: 0.9em;">{{ data.dst_ip }}:{{ data.dst_port }}</td>
                 <td>{{ data.proto }}</td>
-                <td style="font-weight: bold; {% if data.prediction == 'Attack' %}color: #e74c3c;{% else %}color: #27ae60;{% endif %}">
+                <td style="font-weight: bold;" class="{% if data.prediction == 'Attack' %}attack-text{% else %}normal-text{% endif %}">
                     {% if data.prediction == 'Attack' %}🚨 ATTACK{% else %}✓ NORMAL{% endif %}
                 </td>
                 <td>{{ data.confidence }}%</td>
@@ -343,8 +403,7 @@
                                 <div class="xai-confidence-fill" style="width: {{ sample.xai_explanation.confidence_percentage if sample.xai_explanation.confidence_percentage else sample.confidence }}%;">
                                     {{ sample.xai_explanation.confidence_percentage if sample.xai_explanation.confidence_percentage else sample.confidence }}%
                                 </div>
-                            </div>
-                        </div>
+                            </div>                        </div>                        </div>
 
                         {% if sample.xai_explanation.top_discriminative_features %}
                         <div class="xai-features">
@@ -449,7 +508,7 @@
             }
         }
 
-        if ({{ realtime_nids | default(false) }}) {
+        if ({{ 'true' if realtime_nids else 'false' }}) {
             const eventSource = new EventSource('/live-data');
             eventSource.onmessage = function(event) {
                 const data = JSON.parse(event.data);
