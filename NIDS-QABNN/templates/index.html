@@ -254,75 +254,98 @@
             <button type="submit" name="toggle_live" value="true" class="{% if realtime_nids %}btn-stop{% else %}btn-start{% endif %}">{{ '🛑 STOP LIVE MONITORING' if realtime_nids else '▶️ START LIVE MONITORING' }}</button>
         </form>
 
-    <div class="{% if realtime_nids %}status-active{% else %}status-idle{% endif %}" style="padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 5px solid;">
+    <div id="live-status-box" class="{% if realtime_nids %}status-active{% else %}status-idle{% endif %}" style="padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 5px solid;">
         <strong>Live Status: </strong> 
         {% if realtime_nids %}
-            🔴 <span style="color: #e74c3c; font-weight: bold;">MONITORING ACTIVE</span> 
+            🔴 <span id="live-status-badge" style="color: #e74c3c; font-weight: bold;">MONITORING ACTIVE</span> 
         {% else %}
-            ⚪ <span style="color: #27ae60; font-weight: bold;">IDLE</span>
+            ⚪ <span id="live-status-badge" style="color: #27ae60; font-weight: bold;">IDLE</span>
         {% endif %}
         
         {% if nids_stats %}
-        <div style="margin-top: 10px; font-size: 0.95em;">
+        <div id="stats-summary" style="margin-top: 10px; font-size: 0.95em;">
             <span style="margin-right: 20px;">📊 Packets: {{ nids_stats.packets_processed }}</span>
             <span style="margin-right: 20px;">🔀 Flows: {{ nids_stats.flows_analyzed }}</span>
             <span style="margin-right: 20px;">🚨 Attacks: <strong style="color: #e74c3c;">{{ nids_stats.attacks_detected }}</strong></span>
             <span style="margin-right: 20px;">📈 Rate: {{ "%.1f"|format(nids_stats.detection_rate) }}%</span>
             <span style="margin-right: 20px;">🔔 Alerts: <strong style="color: #f39c12;">{{ nids_stats.active_alerts }}</strong></span>
         </div>
+        <div id="capture-info" style="margin-top: 8px; font-size: 0.9em; color: #555;">
+            {% if capture_interface %}
+            🌐 Interface: <strong>{{ capture_interface }}</strong>
+            {% else %}
+            🌐 Interface: <strong>Auto-detecting default interface</strong>
+            {% endif %}
+            {% if available_interfaces %}
+            <div style="margin-top: 4px; font-size: 0.85em; color: #444;">
+                Available interfaces: <strong>{{ available_interfaces | join(', ') }}</strong>
+            </div>
+            {% endif %}
+        </div>
+        <div id="capture-error" style="margin-top: 12px; padding: 12px; border-radius: 8px; background: #fdecea; color: #611a15; border: 1px solid #f5c6cb; text-align: left; display: {% if capture_error %}block{% else %}none{% endif %};">
+            <strong>Capture Error:</strong> {{ capture_error }}<br>
+            <small>Please run the application with elevated privileges or verify the selected interface.</small>
+        </div>
         {% endif %}
     </div>
 
     <!-- ALERTS SECTION -->
-    {% if active_alerts %}
-    <div style="background: linear-gradient(45deg, #ffeaa7, #fab1a0); padding: 20px; margin: 20px 0; border-radius: 10px; border: 3px solid #e17055; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
-        <h2 style="color: #d63031; margin-top: 0; text-align: center;">🚨 ACTIVE ALERTS - IMMEDIATE ATTENTION REQUIRED</h2>
-        
-        {% for alert in active_alerts %}
-        <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" class="{% if alert.severity == 'High' %}severity-high{% elif alert.severity == 'Medium' %}severity-medium{% else %}severity-low{% endif %}" style="border: 2px solid;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 1.5em;">{% if alert.severity == 'High' %}🔴{% elif alert.severity == 'Medium' %}🟠{% else %}🟡{% endif %}</span>
-                    <strong style="font-size: 1.2em;" class="{% if alert.severity == 'High' %}severity-high{% elif alert.severity == 'Medium' %}severity-medium{% else %}severity-low{% endif %}">{{ alert.type }}</strong>
-                    <span class="severity-{% if alert.severity == 'High' %}high{% elif alert.severity == 'Medium' %}medium{% else %}low{% endif %}-bg" style="color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
-                        {{ alert.severity }} PRIORITY
-                    </span>
-                </div>
-                <button onclick="dismissAlert('{{ alert.id }}')" style="background: #95a5a6; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕ Dismiss</button>
-            </div>
+    <div id="alerts-container">
+        {% if active_alerts %}
+        <div style="background: linear-gradient(45deg, #ffeaa7, #fab1a0); padding: 20px; margin: 20px 0; border-radius: 10px; border: 3px solid #e17055; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
+            <h2 style="color: #d63031; margin-top: 0; text-align: center;">🚨 ACTIVE ALERTS - IMMEDIATE ATTENTION REQUIRED</h2>
             
-            <div style="font-size: 1.1em; margin: 10px 0; color: #2c3e50;">
-                <strong>{{ alert.description }}</strong>
+            {% for alert in active_alerts %}
+            <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" class="{% if alert.severity == 'High' %}severity-high{% elif alert.severity == 'Medium' %}severity-medium{% else %}severity-low{% endif %}" style="border: 2px solid;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 1.5em;">{% if alert.severity == 'High' %}🔴{% elif alert.severity == 'Medium' %}🟠{% else %}🟡{% endif %}</span>
+                        <strong style="font-size: 1.2em;" class="{% if alert.severity == 'High' %}severity-high{% elif alert.severity == 'Medium' %}severity-medium{% else %}severity-low{% endif %}">{{ alert.type }}</strong>
+                        <span class="severity-{% if alert.severity == 'High' %}high{% elif alert.severity == 'Medium' %}medium{% else %}low{% endif %}-bg" style="color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
+                            {{ alert.severity }} PRIORITY
+                        </span>
+                    </div>
+                    <button onclick="dismissAlert('{{ alert.id }}')" style="background: #95a5a6; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕ Dismiss</button>
+                </div>
+                
+                <div style="font-size: 1.1em; margin: 10px 0; color: #2c3e50;">
+                    <strong>{{ alert.description }}</strong>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+                    <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                        <strong>📤 Source:</strong> {{ alert.src_ip }}
+                    </div>
+                    <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                        <strong>📥 Destination:</strong> {{ alert.dst_ip }}:{{ alert.dst_port }}
+                    </div>
+                    <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                        <strong>📊 Data Size:</strong> {{ alert.data_size_mb }} MB ({{ alert.data_size }} bytes)
+                    </div>
+                    <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                        <strong>🔗 Protocol:</strong> {{ alert.protocol }}
+                    </div>
+                    <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                        <strong>⏰ Time:</strong> {{ alert.timestamp[11:19] if alert.timestamp else 'Unknown' }}
+                    </div>
+                    <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                        <strong>🎯 Confidence:</strong> {{ alert.confidence }}%
+                    </div>
+                </div>
+                
+                <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 10px; margin-top: 15px;">
+                    <strong>⚠️ Action Required:</strong> {{ alert.action_required }}
+                </div>
             </div>
-            
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
-                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                    <strong>📤 Source:</strong> {{ alert.src_ip }}
-                </div>
-                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                    <strong>📥 Destination:</strong> {{ alert.dst_ip }}:{{ alert.dst_port }}
-                </div>
-                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                    <strong>📊 Data Size:</strong> {{ alert.data_size_mb }} MB ({{ alert.data_size }} bytes)
-                </div>
-                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                    <strong>🔗 Protocol:</strong> {{ alert.protocol }}
-                </div>
-                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                    <strong>⏰ Time:</strong> {{ alert.timestamp[11:19] if alert.timestamp else 'Unknown' }}
-                </div>
-                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                    <strong>🎯 Confidence:</strong> {{ alert.confidence }}%
-                </div>
-            </div>
-            
-            <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 10px; margin-top: 15px;">
-                <strong>⚠️ Action Required:</strong> {{ alert.action_required }}
-            </div>
+            {% endfor %}
         </div>
-        {% endfor %}
+        {% else %}
+        <div style="background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 10px; border: 1px solid #ccc; text-align: center;">
+            <h3 style="margin: 0; color: #333;">No active alerts yet</h3>
+            <p style="margin: 10px 0 0; color: #555;">Real network traffic is being monitored and alerts will appear here once detected.</p>
+        </div>
+        {% endif %}
     </div>
-    {% endif %}
 
 
 
@@ -332,8 +355,7 @@
     </div>
     {% endif %}
     
-    {% if live_data %}
-    <div style="background: #e3f2fd; padding: 15px; margin: 10px 0; border-radius: 5px; border: 2px solid #2196F3;">
+    <div id="live-predictions-section" style="background: #e3f2fd; padding: 15px; margin: 10px 0; border-radius: 5px; border: 2px solid #2196F3;">
         <h3>🔴 Live Predictions (Real-Time Network Analysis)</h3>
         <table border="1" style="width: 100%; border-collapse: collapse;">
             <tr style="background: #1976d2; color: white;">
@@ -345,22 +367,44 @@
                 <th>Confidence</th>
                 <th>Severity</th>
             </tr>
-            {% for data in live_data %}
-            <tr class="{% if data.prediction == 'Attack' %}attack-row{% else %}normal-row{% endif %}">
-                <td>{{ data.timestamp }}</td>
-                <td style="font-family: monospace; font-size: 0.9em;">{{ data.src_ip }}:{{ data.src_port }}</td>
-                <td style="font-family: monospace; font-size: 0.9em;">{{ data.dst_ip }}:{{ data.dst_port }}</td>
-                <td>{{ data.proto }}</td>
-                <td style="font-weight: bold;" class="{% if data.prediction == 'Attack' %}attack-text{% else %}normal-text{% endif %}">
-                    {% if data.prediction == 'Attack' %}🚨 ATTACK{% else %}✓ NORMAL{% endif %}
-                </td>
-                <td>{{ data.confidence }}%</td>
-                <td><strong>{{ data.severity_score }}/10</strong></td>
-            </tr>
-            {% endfor %}
+            <tbody id="live-predictions-body">
+                {% if live_data %}
+                    {% for data in live_data %}
+                    <tr class="{% if data.prediction == 'Attack' %}attack-row{% else %}normal-row{% endif %}">
+                        <td>{{ data.timestamp }}</td>
+                        <td style="font-family: monospace; font-size: 0.9em;">{{ data.src_ip }}:{{ data.src_port }}</td>
+                        <td style="font-family: monospace; font-size: 0.9em;">{{ data.dst_ip }}:{{ data.dst_port }}</td>
+                        <td>{{ data.proto }}</td>
+                        <td style="font-weight: bold;" class="{% if data.prediction == 'Attack' %}attack-text{% else %}normal-text{% endif %}">
+                            {% if data.prediction == 'Attack' %}🚨 ATTACK{% else %}✓ NORMAL{% endif %}
+                        </td>
+                        <td>{{ data.confidence }}%</td>
+                        <td><strong>{{ data.severity_score }}/10</strong></td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr id="live-predictions-empty"><td colspan="7" style="text-align:center; padding:20px; color:#555;">No live traffic yet. Start monitoring and wait for packets to appear.</td></tr>
+                {% endif %}
+            </tbody>
         </table>
     </div>
-    {% endif %}
+
+    <div id="raw-packets-section" style="background: #fff3e6; padding: 15px; margin: 10px 0; border-radius: 5px; border: 2px solid #ffb300;">
+        <h3>📦 Captured Packets (Raw Summary)</h3>
+        <table border="1" style="width: 100%; border-collapse: collapse;">
+            <tr style="background: #ffa726; color: white;">
+                <th>Timestamp</th>
+                <th>Source</th>
+                <th>Destination</th>
+                <th>Protocol</th>
+                <th>Length</th>
+                <th>Summary</th>
+            </tr>
+            <tbody id="raw-packets-body">
+                <tr id="raw-packets-empty"><td colspan="6" style="text-align:center; padding:20px; color:#555;">No raw packets captured yet. Live capture is active and waiting for network traffic.</td></tr>
+            </tbody>
+        </table>
+    </div>
 
     {% if current_sample %}
         <div class="result 
@@ -378,7 +422,7 @@
         <div style="flex: 1; background: #e8f5e8; padding: 15px; border-radius: 8px; border: 2px solid #4caf50;">
             <h3>✓ Recent Normal Traffic ({{ recent_normals|length }})</h3>
             {% if recent_normals %}
-            <div style="max-height: 600px; overflow-y: auto;">
+            <div id="recent-normal-list" style="max-height: 600px; overflow-y: auto;">
                 {% for sample in recent_normals %}
                 <div style="border: 1px solid #d4edda; margin: 10px 0; border-radius: 4px; padding: 10px; background: white;">
                     <div class="sample-row" onclick="toggleXAI(this)">
@@ -425,15 +469,16 @@
                 {% endfor %}
             </div>
             {% else %}
-                <p>No normal traffic yet</p>
+                <div style="padding: 20px; color: #555;">No normal traffic yet</div>
             {% endif %}
+            </div>
         </div>
 
-        <div style="flex: 1; background: #f9eaea; padding: 15px; border-radius: 8px; border: 2px solid #e74c3c;">
+        <div id="recent-attacks-section" style="flex: 1; background: #f9eaea; padding: 15px; border-radius: 8px; border: 2px solid #e74c3c;">
             <h3>⚠ Recent Attacks ({{ recent_attacks|length }})</h3>
-            {% if recent_attacks %}
-            <div style="max-height: 600px; overflow-y: auto;">
-                {% for sample in recent_attacks %}
+            <div id="recent-attacks-list" style="max-height: 600px; overflow-y: auto;">
+                {% if recent_attacks %}
+                    {% for sample in recent_attacks %}
                 <div style="border: 1px solid #f8d7da; margin: 10px 0; border-radius: 4px; padding: 10px; background: white;">
                     <div class="sample-row" onclick="toggleXAI(this)">
                         <span class="expandable-icon">▼</span>
@@ -467,12 +512,16 @@
                 {% endfor %}
             </div>
             {% else %}
-                <p>No attacks yet</p>
+                <div style="padding: 20px; color: #555;">No attacks yet</div>
             {% endif %}
+            </div>
         </div>
     </div>
 
     <script>
+        const isRealtime = {{ 'true' if realtime_nids else 'false' }};
+        const maxLiveRows = 20;
+
         function toggleXAI(element) {
             const parent = element.parentElement;
             const xaiDiv = parent.querySelector('.xai-explanation');
@@ -495,7 +544,6 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        // Reload the page to update alerts
                         location.reload();
                     } else {
                         alert('Failed to dismiss alert');
@@ -508,15 +556,216 @@
             }
         }
 
-        if ({{ 'true' if realtime_nids else 'false' }}) {
+        function formatRow(record) {
+            return `
+                <tr class="${record.prediction === 'Attack' ? 'attack-row' : 'normal-row'}">
+                    <td>${record.timestamp}</td>
+                    <td style="font-family: monospace; font-size: 0.9em;">${record.src_ip}:${record.src_port}</td>
+                    <td style="font-family: monospace; font-size: 0.9em;">${record.dst_ip}:${record.dst_port}</td>
+                    <td>${record.proto}</td>
+                    <td style="font-weight: bold;" class="${record.prediction === 'Attack' ? 'attack-text' : 'normal-text'}">${record.prediction === 'Attack' ? '🚨 ATTACK' : '✓ NORMAL'}</td>
+                    <td>${record.confidence}%</td>
+                    <td><strong>${record.severity_score}/10</strong></td>
+                </tr>
+            `;
+        }
+
+        function renderLivePredictions(records) {
+            const body = document.getElementById('live-predictions-body');
+            if (!body) return;
+            if (!records || records.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:#555;">No live traffic yet. Start monitoring and wait for packets to appear.</td></tr>';
+                return;
+            }
+            body.innerHTML = records.map(formatRow).join('');
+        }
+
+        function renderAlerts(alerts) {
+            const container = document.getElementById('alerts-container');
+            if (!container) return;
+            if (!alerts || alerts.length === 0) {
+                container.innerHTML = `<div style="background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 10px; border: 1px solid #ccc; text-align: center;"><h3 style="margin: 0; color: #333;">No active alerts yet</h3><p style="margin: 10px 0 0; color: #555;">Real network traffic is being monitored and alerts will appear here once detected.</p></div>`;
+                return;
+            }
+
+            const alertBoxes = alerts.map(alert => `
+                <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" class="${alert.severity === 'High' ? 'severity-high' : alert.severity === 'Medium' ? 'severity-medium' : 'severity-low'}" style="border: 2px solid;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 1.5em;">${alert.severity === 'High' ? '🔴' : alert.severity === 'Medium' ? '🟠' : '🟡'}</span>
+                            <strong style="font-size: 1.2em;" class="${alert.severity === 'High' ? 'severity-high' : alert.severity === 'Medium' ? 'severity-medium' : 'severity-low'}">${alert.type}</strong>
+                            <span class="${alert.severity === 'High' ? 'severity-high-bg' : alert.severity === 'Medium' ? 'severity-medium-bg' : 'severity-low-bg'}" style="color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">${alert.severity} PRIORITY</span>
+                        </div>
+                        <button onclick="dismissAlert('${alert.id}')" style="background: #95a5a6; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕ Dismiss</button>
+                    </div>
+                    <div style="font-size: 1.1em; margin: 10px 0; color: #2c3e50;"><strong>${alert.description}</strong></div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+                        <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;"><strong>📤 Source:</strong> ${alert.src_ip}</div>
+                        <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;"><strong>📥 Destination:</strong> ${alert.dst_ip}:${alert.dst_port}</div>
+                        <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;"><strong>📊 Data Size:</strong> ${alert.data_size_mb} MB (${alert.data_size} bytes)</div>
+                        <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;"><strong>🔗 Protocol:</strong> ${alert.protocol}</div>
+                        <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;"><strong>⏰ Time:</strong> ${alert.timestamp ? alert.timestamp.slice(11, 19) : 'Unknown'}</div>
+                        <div style="background: #f8f9fa; padding: 8px; border-radius: 4px;"><strong>🎯 Confidence:</strong> ${alert.confidence}%</div>
+                    </div>
+                    <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 10px; margin-top: 15px;"><strong>⚠️ Action Required:</strong> ${alert.action_required}</div>
+                </div>
+            `).join('');
+            container.innerHTML = `
+                <div style="background: linear-gradient(45deg, #ffeaa7, #fab1a0); padding: 20px; margin: 20px 0; border-radius: 10px; border: 3px solid #e17055; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
+                    <h2 style="color: #d63031; margin-top: 0; text-align: center;">🚨 ACTIVE ALERTS - IMMEDIATE ATTENTION REQUIRED</h2>
+                    ${alertBoxes}
+                </div>
+            `;
+        }
+
+        function renderStats(stats) {
+            if (!stats) return;
+            const statusBox = document.getElementById('live-status-box');
+            const statusBadge = document.getElementById('live-status-badge');
+            const summary = document.getElementById('stats-summary');
+            const captureInfo = document.getElementById('capture-info');
+            const captureError = document.getElementById('capture-error');
+            if (summary) {
+                summary.innerHTML = `📊 Packets: ${stats.packets_processed}   🔀 Flows: ${stats.flows_analyzed}   🚨 Attacks: <strong style="color: #e74c3c;">${stats.attacks_detected}</strong>   📈 Rate: ${stats.detection_rate.toFixed(1)}%   🔔 Alerts: <strong style="color: #f39c12;">${stats.active_alerts}</strong>`;
+            }
+            if (captureInfo) {
+                captureInfo.innerHTML = stats.capture_interface ? `🌐 Interface: <strong>${stats.capture_interface}</strong>` : '🌐 Interface: <strong>Auto-detecting default interface</strong>';
+            }
+            if (captureError) {
+                if (stats.capture_error) {
+                    captureError.style.display = 'block';
+                    captureError.innerHTML = `<strong>Capture Error:</strong> ${stats.capture_error}<br><small>Please run the application with elevated privileges or verify the selected interface.</small>`;
+                } else {
+                    captureError.style.display = 'none';
+                }
+            }
+            if (stats.is_capturing) {
+                statusBox.className = 'status-active';
+                statusBadge.textContent = 'MONITORING ACTIVE';
+                statusBadge.style.color = '#e74c3c';
+            } else {
+                statusBox.className = 'status-idle';
+                statusBadge.textContent = 'IDLE';
+                statusBadge.style.color = '#27ae60';
+            }
+        }
+
+        function renderRecentTraffic(records, containerId, emptyText) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!records || records.length === 0) {
+                container.innerHTML = `<div style="padding: 20px; color: #555;">${emptyText}</div>`;
+                return;
+            }
+            container.innerHTML = records.map(sample => `
+                <div style="border: 1px solid ${containerId === 'recent-attacks-list' ? '#f8d7da' : '#d4edda'}; margin: 10px 0; border-radius: 4px; padding: 10px; background: white;">
+                    <div class="sample-row" onclick="toggleXAI(this)">
+                        <span class="expandable-icon">▼</span>
+                        <strong>${sample.src_ip}: ${sample.src_port}</strong> → <strong>${sample.dst_ip}: ${sample.dst_port}</strong>
+                        <span class="${containerId === 'recent-attacks-list' ? 'attack-badge' : 'normal-badge'}">${containerId === 'recent-attacks-list' ? 'ATTACK' : 'NORMAL'}</span>
+                        <div style="float: right; font-weight: bold; color: ${containerId === 'recent-attacks-list' ? '#e74c3c' : '#27ae60'};">Score: ${sample.severity_score || sample.attack_cat || 'N/A'}${containerId === 'recent-attacks-list' ? '/10' : ''}</div>
+                    </div>
+                    <div style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        Type: ${sample.attack_cat || 'Unknown'} | Proto: ${sample.proto || sample.service} | Time: <span style="font-family: monospace;">${sample.timestamp ? sample.timestamp.slice(0, 19) : sample.state}</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderRawPackets(records) {
+            const body = document.getElementById('raw-packets-body');
+            if (!body) return;
+            if (!records || records.length === 0) {
+                body.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:#555;">No raw packets captured yet. Live capture is active and waiting for network traffic.</td></tr>';
+                return;
+            }
+            body.innerHTML = records.map(record => `
+                <tr>
+                    <td>${record.timestamp}</td>
+                    <td style="font-family: monospace; font-size: 0.9em;">${record.src_ip}:${record.src_port}</td>
+                    <td style="font-family: monospace; font-size: 0.9em;">${record.dst_ip}:${record.dst_port}</td>
+                    <td>${record.proto}</td>
+                    <td>${record.length}</td>
+                    <td>${record.summary}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function fetchJson(url) {
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                console.error(`Fetch error for ${url}:`, error);
+                return null;
+            }
+        }
+
+        async function refreshDashboard() {
+            const [stats, live, alerts, normals, attacks, packets] = await Promise.all([
+                fetchJson('/api/stats'),
+                fetchJson('/api/live-predictions?limit=20'),
+                fetchJson('/api/alerts?limit=20'),
+                fetchJson('/api/recent-normal?limit=10'),
+                fetchJson('/api/recent-attacks?limit=10'),
+                fetchJson('/api/raw-packets?limit=20')
+            ]);
+            if (stats) renderStats(stats);
+            if (live && live.data) renderLivePredictions(live.data);
+            if (packets && packets.data) renderRawPackets(packets.data);
+            if (alerts && alerts.data) renderAlerts(alerts.data);
+            if (normals && normals.data) renderRecentTraffic(normals.data, 'recent-normal-list', 'No normal traffic yet');
+            if (attacks && attacks.data) renderRecentTraffic(attacks.data, 'recent-attacks-list', 'No attacks yet');
+        }
+
+        function startLiveUpdates() {
+            refreshDashboard();
+            setInterval(refreshDashboard, 5000);
+        }
+
+        function streamLiveData() {
+            if (!isRealtime || !window.EventSource) return;
             const eventSource = new EventSource('/live-data');
             eventSource.onmessage = function(event) {
                 const data = JSON.parse(event.data);
-                console.log('Live prediction:', data);
+                if (data) {
+                    // Update live data immediately and refresh page segments
+                    const existing = document.getElementById('live-predictions-body');
+                    if (existing) {
+                        const row = document.createElement('tr');
+                        row.className = data.prediction === 'Attack' ? 'attack-row' : 'normal-row';
+                        row.innerHTML = `
+                            <td>${data.timestamp}</td>
+                            <td style="font-family: monospace; font-size: 0.9em;">${data.src_ip}:${data.src_port}</td>
+                            <td style="font-family: monospace; font-size: 0.9em;">${data.dst_ip}:${data.dst_port}</td>
+                            <td>${data.proto}</td>
+                            <td style="font-weight: bold;" class="${data.prediction === 'Attack' ? 'attack-text' : 'normal-text'}">${data.prediction === 'Attack' ? '🚨 ATTACK' : '✓ NORMAL'}</td>
+                            <td>${data.confidence}%</td>
+                            <td><strong>${data.severity_score}/10</strong></td>
+                        `;
+                        const empty = document.getElementById('live-predictions-empty');
+                        if (empty) empty.remove();
+                        existing.insertAdjacentElement('afterbegin', row);
+                        while (existing.rows.length > maxLiveRows) {
+                            existing.deleteRow(-1);
+                        }
+                    }
+                    refreshDashboard();
+                }
+            };
+            eventSource.onerror = function(e) {
+                console.warn('Live data stream error', e);
             };
         }
-    </script>
 
+        document.addEventListener('DOMContentLoaded', function() {
+            if (isRealtime) {
+                startLiveUpdates();
+                streamLiveData();
+            }
+        });
+    </script>
 </div>
 
 </body>

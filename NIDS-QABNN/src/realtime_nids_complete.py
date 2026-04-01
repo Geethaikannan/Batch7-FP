@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scapy.all import sniff, IP, TCP, UDP, ICMP
+from scapy.all import sniff, IP, TCP, UDP, ICMP, conf, get_if_list
 from src.flow_extractor import FlowExtractor
 from src.qabnn import QABNN
 from src.xai_explainer import QABNNExplainer
@@ -39,10 +39,13 @@ class RealtimeNIDSSystem:
         
         # Real-time state
         self.is_capturing = False
+        self.capture_interface = None
+        self.capture_error = None
         self.flow_extractor = FlowExtractor(timeout=120.0)
         
         # Live predictions storage
         self.live_predictions = []  # Last 100 predictions
+        self.recent_packets = []    # Last 100 raw captured packets
         self.normal_traffic = []     # Recent normal flows
         self.attack_traffic = []     # Recent attack flows
         self.max_records = 100
@@ -57,6 +60,7 @@ class RealtimeNIDSSystem:
         self.brute_force_tracker = defaultdict(lambda: {'attempts': 0, 'last_time': 0})
         self.http_flood_tracker = defaultdict(lambda: {'requests': 0, 'last_time': 0})
         self.malformed_tracker = defaultdict(lambda: {'count': 0, 'last_time': 0})
+        self.icmp_tracker = defaultdict(lambda: {'count': 0, 'last_time': 0})
         
         # Alerts system for data uploads and large transfers
         self.alerts = []  # List of active alerts
@@ -72,9 +76,9 @@ class RealtimeNIDSSystem:
         
         # File upload detection state
         self.file_upload_tracker = defaultdict(lambda: {'count': 0, 'total_bytes': 0, 'last_time': 0})
-        self.FILE_UPLOAD_THRESHOLD = 1024 * 800  # 800KB (0.8MB) threshold for file uploads
-        self.FILE_UPLOAD_PORTS = [80, 443, 21, 22, 139, 445, 3306, 5432]  # Common file transfer ports
-        
+        self.FILE_UPLOAD_THRESHOLD = 1024 * 100  # 100KB threshold to catch uploads across services
+        self.FILE_UPLOAD_PORTS = [80, 443, 21, 22, 139, 445, 3306, 5432, 8080, 8443]  # Common file transfer ports
+
         # Load model and preprocessors
         self._load_model()
         self._load_preprocessors()
@@ -83,13 +87,12 @@ class RealtimeNIDSSystem:
         self.explainer = None
         if self.model:
             feature_names = [
-                'duration', 'spkts', 'dpkts', 'sbytes', 'dbytes', 'rate', 'sttl', 'dttl',
-                'sload', 'dload', 'sloss', 'dloss', 'sintpkt', 'dintpkt', 'sjit', 'djit',
-                'swin', 'stcpb', 'dtcpb', 'dwin', 'tcprtt', 'synack', 'ackdat', 'smean',
-                'dmean', 'trans_depth', 'response_body_len', 'ct_ftp_cmd', 'is_ftp_login',
-                'ct_ftp_resp', 'ct_dns_queries', 'ct_smtp_cmd', 'ct_state_ttl', 'ct_srv_src',
-                'ct_srv_dst', 'ct_dst_ltm', 'ct_src_ltm', 'ct_src_dport_ltm', 'is_sm_ips_ports',
-                'ct_flw_http_mthd', 'is_ftp_login', 'ct_ftp_resp'
+                'dur', 'proto', 'service', 'state', 'spkts', 'dpkts', 'sbytes', 'dbytes',
+                'rate', 'sttl', 'dttl', 'sload', 'dload', 'sloss', 'dloss', 'sinpkt', 'dinpkt',
+                'sjit', 'djit', 'swin', 'stcpb', 'dtcpb', 'dwin', 'tcprtt', 'synack', 'ackdat',
+                'smean', 'dmean', 'trans_depth', 'response_body_len', 'ct_srv_src', 'ct_state_ttl',
+                'ct_dst_ltm', 'ct_src_dport_ltm', 'ct_dst_sport_ltm', 'ct_dst_src_ltm', 'ct_src_ltm',
+                'ct_srv_dst', 'is_sm_ips_ports', 'ct_ftp_cmd', 'ct_flw_http_mthd', 'is_ftp_login'
             ]
             self.explainer = QABNNExplainer(self.model, feature_names=feature_names)
         
@@ -121,6 +124,32 @@ class RealtimeNIDSSystem:
             logger.error(f"Failed to load model: {e}")
             self.model = QABNN()
     
+    def _detect_icmp_attack(self, flow_features):
+        """Detect ICMP ping flood/scan attacks"""
+        src_ip = flow_features.get('src_ip', 'Unknown')
+        proto = str(flow_features.get('proto', '')).lower()
+        current_time = time.time()
+
+        if proto == 'icmp':
+            self.icmp_tracker[src_ip]['count'] += 1
+            self.icmp_tracker[src_ip]['last_time'] = current_time
+            
+            # Clean old entries (>10s window)
+            for ip in list(self.icmp_tracker):
+                if current_time - self.icmp_tracker[ip]['last_time'] > 10:
+                    del self.icmp_tracker[ip]
+            
+            icmp_count = self.icmp_tracker[src_ip]['count']
+            if icmp_count >= 5:  # 5+ ICMP in 10s = flood/scan
+                return {
+                    'is_attack': True,
+                    'attack_type': 'ICMP Ping Flood/Scan',
+                    'severity': 5,
+                    'confidence': 85.0,
+                    'explanation': f"🚨 ICMP flood detected: {icmp_count} pings from {src_ip} in 10s"
+                }
+        return None
+
     def _detect_attack_patterns(self, flow_features):
         """Detect specific attack patterns and return attack info if found"""
         src_ip = flow_features.get('src_ip', 'Unknown')
@@ -238,7 +267,7 @@ class RealtimeNIDSSystem:
             return None
     
     def _detect_file_upload(self, flow_features):
-        """Detect REAL file uploads - only alert on significant files (>= 1MB)"""
+        """Detect real file uploads and raise alerts for client-to-server transfers."""
         src_ip = flow_features.get('src_ip', 'Unknown')
         dst_ip = flow_features.get('dst_ip', 'Unknown')
         dst_port = int(flow_features.get('dst_port', 0))
@@ -246,101 +275,83 @@ class RealtimeNIDSSystem:
         dbytes = int(flow_features.get('dbytes', 0))
         proto = str(flow_features.get('proto', 'tcp')).lower()
         current_time = time.time()
-        
+
         total_bytes = sbytes + dbytes
-        
-        # Check for file uploads based on port only
-        is_file_transfer_port = dst_port in self.FILE_UPLOAD_PORTS
-        
-        if not is_file_transfer_port:
-            return None
-        
-        # ONLY REAL UPLOADS: Minimum 1MB threshold
-        MIN_UPLOAD_SIZE = 1024 * 1024  # 1MB minimum
-        
-        # Different detection logic for different protocols
+        min_upload_size = self.FILE_UPLOAD_THRESHOLD
+
         upload_detected = False
         upload_size = 0
-        
-        if dst_port == 80 or dst_port == 443:
-            # HTTP/HTTPS: Check client upload data only (sbytes = client->server)
-            # Web uploads usually: client sends file, server sends small response
-            if sbytes >= MIN_UPLOAD_SIZE:
+        transfer_type = "Generic Upload"
+
+        if dst_port in [80, 443]:
+            # HTTP/HTTPS uploads are usually client-heavy and often have a small response
+            if sbytes >= min_upload_size and sbytes > max(1, dbytes * 1.2):
                 upload_detected = True
                 upload_size = sbytes
-                logger.warning(f"🚀 HTTP/HTTPS UPLOAD DETECTED: {sbytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
-        
+                transfer_type = "HTTP/HTTPS"
+                logger.warning(f"🚀 HTTP/HTTPS UPLOAD DETECTED: {sbytes/1024:.1f}KB from {src_ip} to {dst_ip}:{dst_port}")
+
         elif dst_port == 21:
-            # FTP: Any significant file transfer
-            if total_bytes >= MIN_UPLOAD_SIZE:
+            if total_bytes >= min_upload_size:
                 upload_detected = True
                 upload_size = total_bytes
-                logger.warning(f"🚀 FTP UPLOAD DETECTED: {total_bytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
-        
+                transfer_type = "FTP"
+                logger.warning(f"🚀 FTP UPLOAD DETECTED: {total_bytes/1024:.1f}KB from {src_ip} to {dst_ip}:{dst_port}")
+
         elif dst_port == 22:
-            # SSH/SCP: Encrypted file transfer
-            if total_bytes >= MIN_UPLOAD_SIZE:
+            if total_bytes >= min_upload_size:
                 upload_detected = True
                 upload_size = total_bytes
-                logger.warning(f"🚀 SSH/SCP UPLOAD DETECTED: {total_bytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
-        
+                transfer_type = "SSH/SCP"
+                logger.warning(f"🚀 SSH/SCP UPLOAD DETECTED: {total_bytes/1024:.1f}KB from {src_ip} to {dst_ip}:{dst_port}")
+
         elif dst_port in [139, 445]:
-            # SMB: File share access
-            if total_bytes >= MIN_UPLOAD_SIZE:
+            if total_bytes >= min_upload_size:
                 upload_detected = True
                 upload_size = total_bytes
-                logger.warning(f"🚀 SMB UPLOAD DETECTED: {total_bytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
-        
+                transfer_type = "SMB"
+                logger.warning(f"🚀 SMB UPLOAD DETECTED: {total_bytes/1024:.1f}KB from {src_ip} to {dst_ip}:{dst_port}")
+
         elif dst_port in [3306, 5432]:
-            # Database: Data load
-            if sbytes >= MIN_UPLOAD_SIZE:
+            if sbytes >= min_upload_size:
                 upload_detected = True
                 upload_size = sbytes
-                logger.warning(f"🚀 DB UPLOAD DETECTED: {sbytes/(1024*1024):.2f}MB from {src_ip} to {dst_ip}:{dst_port}")
-        
+                transfer_type = "Database"
+                logger.warning(f"🚀 DB UPLOAD DETECTED: {sbytes/1024:.1f}KB from {src_ip} to {dst_ip}:{dst_port}")
+
+        else:
+            # Generic upload detection for custom or unknown service ports
+            if sbytes >= min_upload_size and sbytes > dbytes:
+                upload_detected = True
+                upload_size = sbytes
+                transfer_type = "Generic Upload"
+                logger.warning(f"🚀 GENERIC UPLOAD DETECTED: {sbytes/1024:.1f}KB from {src_ip} to {dst_ip}:{dst_port}")
+
         if not upload_detected:
             return None
-        
-        # Track upload
+
         tracker_key = f"{src_ip}:{dst_ip}:{dst_port}"
         self.file_upload_tracker[tracker_key]['count'] += 1
         self.file_upload_tracker[tracker_key]['total_bytes'] += upload_size
         self.file_upload_tracker[tracker_key]['last_time'] = current_time
-        
-        # Clean old entries (older than 5 minutes)
+
         for key in list(self.file_upload_tracker.keys()):
             if current_time - self.file_upload_tracker[key]['last_time'] > 300:
                 del self.file_upload_tracker[key]
-        
-        # Determine transfer type and extract file path
-        transfer_type = "Unknown"
+
         file_path = self._extract_file_path(flow_features)
-        
-        if dst_port == 80 or dst_port == 443:
-            transfer_type = "HTTP/HTTPS"
-        elif dst_port == 21:
-            transfer_type = "FTP"
-        elif dst_port == 22:
-            transfer_type = "SSH/SCP"
-        elif dst_port in [139, 445]:
-            transfer_type = "SMB"
-        elif dst_port in [3306, 5432]:
-            transfer_type = "Database"
-        
-        # Calculate file size properly
+
         file_size_mb = round(upload_size / (1024 * 1024), 2)
         file_size_kb = round(upload_size / 1024, 2)
-        
-        # Determine severity based on actual file size
+
         severity = "Medium"
-        if upload_size >= 10 * 1024 * 1024:  # >= 10MB
+        if upload_size >= 10 * 1024 * 1024:
             severity = "High"
-        elif upload_size >= 50 * 1024 * 1024:  # >= 50MB
+        elif upload_size >= 50 * 1024 * 1024:
             severity = "Critical"
-        
+
         file_info = f" ({file_path})" if file_path else ""
-        
-        # Create alert with correct file size
+
         alert = {
             'id': f"upload_{int(time.time() * 1000)}",
             'timestamp': datetime.now().isoformat(),
@@ -356,16 +367,16 @@ class RealtimeNIDSSystem:
             'data_size_mb': file_size_mb,
             'confidence': 100.0,
             'file_path': file_path,
-            'description': f"{transfer_type} file upload: {file_size_mb}MB from {src_ip} to {dst_ip}:{dst_port}{file_info}",
+            'description': f"{transfer_type} file upload: {file_size_kb}KB from {src_ip} to {dst_ip}:{dst_port}{file_info}",
             'action_required': "Review file upload for security",
             'status': 'active'
         }
-        
+
         self.alerts.append(alert)
         if len(self.alerts) > self.max_alerts:
             self.alerts = self.alerts[-self.max_alerts:]
-        
-        logger.warning(f"📊 ALERT CREATED: {file_size_mb}MB file uploaded from {src_ip} to {dst_ip}:{dst_port} via {transfer_type}")
+
+        logger.warning(f"📊 ALERT CREATED: {file_size_kb}KB upload from {src_ip} to {dst_ip}:{dst_port} via {transfer_type}")
         return alert
     
     def _load_preprocessors(self):
@@ -407,6 +418,12 @@ class RealtimeNIDSSystem:
             if IP not in pkt:
                 return
             
+            # Store raw packet summary for dashboard visibility
+            packet_record = self._create_raw_packet_record(pkt)
+            self.recent_packets.append(packet_record)
+            if len(self.recent_packets) > self.max_records:
+                self.recent_packets = self.recent_packets[-self.max_records:]
+            
             # Extract flow information
             flow_result = self.flow_extractor.process_packet(pkt)
             
@@ -428,6 +445,10 @@ class RealtimeNIDSSystem:
             file_upload_alert = self._detect_file_upload(flow_features)
             if file_upload_alert:
                 logger.warning(f"✅ UPLOAD ALERT: {file_upload_alert['data_size_mb']}MB file detected")
+            
+            # Check for ICMP attack heuristic first (overrides ML for protocol-specific detection)
+            icmp_attack = self._detect_icmp_attack(flow_features)
+            is_icmp_attack = icmp_attack is not None
             
             # Make prediction using model if available
             if self.model:
@@ -455,9 +476,9 @@ class RealtimeNIDSSystem:
                         
                         confidence = max(50, min(100, confidence))  # Ensure between 50-100
                         
-                        # Create record
-                        record = {
-                            'timestamp': datetime.now().isoformat(),
+                    # Create record
+                    record = {
+                        'timestamp': datetime.now().isoformat(),
                         'src_ip': flow_features.get('src_ip', 'Unknown'),
                         'dst_ip': flow_features.get('dst_ip', 'Unknown'),
                         'src_port': int(flow_features.get('src_port', 0)),
@@ -469,10 +490,10 @@ class RealtimeNIDSSystem:
                         'dbytes': int(flow_features.get('dbytes', 0)),
                         'src_bytes': int(flow_features.get('sbytes', 0)),
                         'dst_bytes': int(flow_features.get('dbytes', 0)),
-                        'prediction': 'Attack' if is_attack else 'Normal',
-                        'confidence': confidence,
-                        'attack_probability': confidence if is_attack else (100 - confidence),
-                        'severity_score': int((confidence / 10)) if is_attack else 0,
+                        'prediction': 'Attack' if (is_attack or is_icmp_attack) else 'Normal',
+                        'confidence': confidence if not is_icmp_attack else icmp_attack['confidence'],
+                        'attack_probability': confidence if not is_icmp_attack else icmp_attack['confidence'],
+                        'severity_score': icmp_attack['severity'] if is_icmp_attack else (int((confidence / 10)) if is_attack else 0),
                         'attack_cat': flow_features.get('attack_cat', 'Unknown'),
                         'state': flow_features.get('state', 'EST'),
                         'xai_explanation': ''
@@ -480,6 +501,10 @@ class RealtimeNIDSSystem:
                     
                     # Add to appropriate list
                     if is_attack:
+                        if is_icmp_attack:
+                            record['attack_cat'] = icmp_attack['attack_type']
+                            record['xai_explanation'] = icmp_attack['explanation']
+                        
                         self.attack_traffic.append(record)
                         self.detection_count += 1
                         if len(self.attack_traffic) > self.max_records:
@@ -641,7 +666,7 @@ class RealtimeNIDSSystem:
                 if col in self.label_encoders:
                     try:
                         # Handle unknown values by using the first class
-                        df[col] = self.label_encoders[col].transform(df[col])
+                        df[col] = self.label_encoders[col].transform(df[col].astype(str))
                     except ValueError:
                         # Unknown category - use default encoding
                         df[col] = 0
@@ -653,12 +678,18 @@ class RealtimeNIDSSystem:
                     else:
                         df[col] = 0
             
-            # Get feature array
+            # Pad to 43 features with zeros for missing UNSW-NB15 columns
             X = df.values
+            if X.shape[1] < 43:
+                padding = np.zeros((X.shape[0], 43 - X.shape[1]))
+                X = np.hstack([X, padding])
+            
+            logger.debug(f"✓ Padded/transformed features shape: {X.shape}")
             
             # Apply scaler if available
             if self.scaler is not None:
                 X = self.scaler.transform(X)
+                logger.debug(f"✓ Transformed features shape: {X.shape} (scaler expects {self.scaler.n_features_in_})")
             
             return X
         
@@ -694,26 +725,45 @@ class RealtimeNIDSSystem:
         if self.is_capturing:
             logger.warning("Capture already running")
             return "Already capturing"
-        
+
+        if interface is None:
+            try:
+                interface = conf.iface or (get_if_list()[0] if get_if_list() else None)
+            except Exception as e:
+                logger.debug(f"Interface auto-detect failed: {e}")
+                interface = None
+
+        if interface is None:
+            self.capture_interface = None
+            self.capture_error = "No network interface available for packet capture."
+            self.is_capturing = False
+            logger.error(self.capture_error)
+            return "Failed"
+
+        self.capture_interface = interface
+        self.capture_error = None
         self.is_capturing = True
-        logger.info(f"Starting packet capture on interface: {interface or 'default'}")
-        
-        # Start capture in background thread
+        logger.info(f"Starting packet capture on interface: {interface}")
+
         def capture_thread():
             try:
                 sniff(
                     iface=interface,
                     prn=self.packet_callback,
                     store=False,
+                    promisc=True,
+                    filter="ip",
                     stop_filter=lambda x: not self.is_capturing
                 )
             except PermissionError:
-                logger.error("Permission denied! Run with administrator/sudo privileges")
+                self.capture_error = "Permission denied. Run the app with administrator privileges."
+                logger.error(self.capture_error)
             except Exception as e:
-                logger.error(f"Capture error: {e}")
+                self.capture_error = f"Packet capture error: {e}"
+                logger.error(self.capture_error)
             finally:
                 self.is_capturing = False
-        
+
         thread = threading.Thread(target=capture_thread, daemon=True)
         thread.start()
         logger.info("✓ Packet capture started")
@@ -731,11 +781,21 @@ class RealtimeNIDSSystem:
         logger.info("✓ Packet capture stopped and attack trackers reset")
         return "Stopped"
     
+    def get_available_interfaces(self):
+        """Return a list of available capture interfaces."""
+        try:
+            return [str(iface) for iface in get_if_list()]
+        except Exception as e:
+            logger.error(f"Failed to list interfaces: {e}")
+            return []
+
     def get_statistics(self):
         """Get current NIDS statistics"""
         active_alerts = len([a for a in self.alerts if a.get('status') == 'active'])
         return {
             'is_capturing': self.is_capturing,
+'capture_interface': str(self.capture_interface) if self.capture_interface else None,
+            'capture_error': self.capture_error,
             'packets_processed': self.packet_count,
             'flows_analyzed': self.flow_count,
             'attacks_detected': self.detection_count,
@@ -755,6 +815,10 @@ class RealtimeNIDSSystem:
         """Get recent attack traffic records"""
         records = self.attack_traffic[-limit:]
         return [self._serialize_record(r) for r in records]
+
+    def get_recent_packets(self, limit=50):
+        """Get recent raw captured packet summaries"""
+        return self.recent_packets[-limit:]
     
     def get_active_alerts(self, limit=20):
         """Get active alerts (most recent first)"""
@@ -791,6 +855,33 @@ class RealtimeNIDSSystem:
             'attack_cat': str(record.get('attack_cat', 'Unknown')),
             'state': str(record.get('state', 'EST')),
             'xai_explanation': str(record.get('xai_explanation', ''))
+        }
+
+    def _create_raw_packet_record(self, pkt):
+        """Create a simplified raw packet summary for dashboard display."""
+        src_ip = pkt[IP].src
+        dst_ip = pkt[IP].dst
+        proto = pkt[IP].proto
+        src_port, dst_port = 0, 0
+        if pkt.haslayer(TCP):
+            src_port = pkt[TCP].sport
+            dst_port = pkt[TCP].dport
+        elif pkt.haslayer(UDP):
+            src_port = pkt[UDP].sport
+            dst_port = pkt[UDP].dport
+        elif pkt.haslayer(ICMP):
+            src_port = pkt[ICMP].type
+            dst_port = pkt[ICMP].code
+
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'src_ip': src_ip,
+            'dst_ip': dst_ip,
+            'src_port': src_port,
+            'dst_port': dst_port,
+            'proto': self._get_protocol_string(proto),
+            'length': len(pkt),
+            'summary': pkt.summary()
         }
 
 

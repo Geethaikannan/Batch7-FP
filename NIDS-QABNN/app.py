@@ -49,6 +49,14 @@ def index():
         
         live_status = ("ON" if nids_system.is_capturing else "OFF")
         
+        if request.method == "GET" and not nids_system.is_capturing and not session.get('auto_started'):
+            result = nids_system.start_capture()
+            session['auto_started'] = True
+            if result == "Started":
+                prediction = "✓ Live traffic capture auto-started - monitoring network traffic for attacks..."
+            else:
+                prediction = "⚠️ Failed to auto-start live capture. Check the capture error below."
+
         if request.method == "POST":
             if request.form.get('toggle_live'):
                 try:
@@ -84,13 +92,18 @@ def index():
         session['recent_attacks'] = recent_attacks
         session.modified = True
         
+        stats = nids_system.get_statistics()
+        available_interfaces = nids_system.get_available_interfaces()
         return render_template(
             "index.html", 
             prediction=prediction,
             live_status=live_status,
             live_data=live_data,
             realtime_nids=nids_system.is_capturing,
-            nids_stats=nids_system.get_statistics(),
+            nids_stats=stats,
+            capture_error=stats.get('capture_error'),
+            capture_interface=stats.get('capture_interface'),
+            available_interfaces=available_interfaces,
             recent_normals=recent_normals,
             recent_attacks=recent_attacks,
             active_alerts=active_alerts
@@ -158,6 +171,17 @@ def api_live_predictions():
     except Exception as e:
         logger.error(f"Error getting live predictions: {e}")
         return jsonify({'error': 'Failed to get live predictions', 'message': str(e)}), 500
+
+@app.route('/api/raw-packets')
+def api_raw_packets():
+    """Get recent raw captured packet summaries"""
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        packets = nids_system.get_recent_packets(limit)
+        return jsonify({'data': packets})
+    except Exception as e:
+        logger.error(f"Error getting raw packets: {e}")
+        return jsonify({'error': 'Failed to get raw packets', 'message': str(e)}), 500
 
 @app.route('/api/alerts')
 def api_alerts():

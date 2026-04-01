@@ -178,6 +178,7 @@ class FlowExtractor:
             'ct_src_dport_ltm': 1,
             'ct_dst_sport_ltm': 1,
             'ct_dst_src_ltm': 1,
+            'ct_dst_sport_ltm': 1,
             'is_ftp_login': 0,
             'ct_ftp_cmd': 0,
             'ct_flw_http_mthd': 0,
