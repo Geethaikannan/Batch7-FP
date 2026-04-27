@@ -10,11 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.realtime_nids_complete import nids_system
 
-def test_icmp_detection():
-    """Test that ICMP/ping traffic is detected"""
+def test_command_detection():
+    """Test ICMP/ping and netstat command detection"""
     
     print("=" * 80)
-    print("ICMP/PING ATTACK DETECTION TEST")
+    print("COMMAND DETECTION TEST (Ping + Netstat)")
     print("=" * 80)
     print("\nSimulating ping traffic (ICMP packets)...\n")
     
@@ -105,5 +105,53 @@ def test_icmp_detection():
     print("✅ TEST COMPLETE - Dashboard running at http://localhost:5000")
     print(f"{'='*80}\n")
 
+def test_netstat_detection():
+    """Test netstat reconnaissance detection (high port probes)"""
+    
+    print("\n2. Testing Netstat detection...")
+    
+    # Clear previous traffic
+    nids_system.attack_traffic.clear()
+    nids_system.normal_traffic.clear()
+    nids_system.live_predictions.clear()
+    
+    # Simulate netstat recon flows (TCP/UDP to high ephemeral ports >1024)
+    netstat_flows = []
+    src_ip = '192.168.1.200'
+    
+    for i in range(12):  # 12 unique high ports to trigger threshold
+        netstat_flows.append({
+            'src_ip': src_ip,
+            'dst_ip': '127.0.0.1',
+            'src_port': 54321,
+            'dst_port': 12340 + i,  # High ports 12340-12351
+            'proto': 'tcp' if i % 2 == 0 else 'udp',
+            'service': '-',
+            'dur': 0.01,
+            'spkts': 1,
+            'dpkts': 0,
+            'sbytes': 40,
+            'dbytes': 0,
+            'rate': 100,
+        })
+    
+    print(f"Simulating {len(netstat_flows)} netstat flows to high ports...")
+    for flow in netstat_flows:
+        nids_system._process_flow(flow)
+        print(f"✓ Processed: {flow['src_ip']}:{flow['src_port']} -> {flow['dst_ip']}:{flow['dst_port']} ({flow['proto'].upper()})")
+        time.sleep(0.05)
+    
+    print("\nNetstat Detection Results:")
+    attacks = nids_system.get_recent_attacks(20)
+    netstat_attacks = [a for a in attacks if 'Netstat' in a.get('attack_cat', '')]
+    
+    if netstat_attacks:
+        print(f"✅ NETSTAT DETECTION SUCCESS: {len(netstat_attacks)} detections")
+        for attack in netstat_attacks:
+            print(f"  • {attack['src_ip']} -> {attack['dst_ip']} | {attack['attack_cat']} | Conf: {attack['confidence']:.1f}% | Sev: {attack['severity_score']}")
+    else:
+        print("❌ No Netstat detections")
+    
 if __name__ == "__main__":
-    test_icmp_detection()
+    test_command_detection()
+    test_netstat_detection()

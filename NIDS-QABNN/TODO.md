@@ -1,13 +1,13 @@
-# ICMP Ping Detection Fix - TODO List
+# NIDS Command Detection (Ping + Netstat) - TODO
 
-## Plan Breakdown (Approved)
-- ✅ [Complete] Understand codebase: ICMP flows processed but ML predicts Normal
-✅ [Complete] Edit `src/realtime_nids_complete.py`: Add ICMP tracker + heuristic detection (severity 5/10)
-- ⏳ [] Test 1: Run `python test_ping_detection.py` → Verify attacks in `get_recent_attacks()`
-- ⏳ [] Test 2: Live ping flood (`ping -n 20 127.0.0.1`) with capture → Check dashboard Recent Attacks
-- ⏳ [] Test 3: Run `python validate_icmp.py` → Confirm ICMP as attacks in predictions
-- ⏳ [] Restart Flask: Ctrl+C, `python app.py` → Full verification
-- ⏳ [] [Done] attempt_completion
+## Overview
+Extend system to detect netstat command (recon tool) alongside existing ping/ICMP detection.
 
-**Next step marked for execution.**
+## Steps:
+- [x] 1. Edit src/realtime_nids_complete.py: Add netstat_tracker in __init__, new _detect_netstat_recon method, integrate into _process_flow ✅
+- [ ] 2. Edit test_ping_detection.py: Rename/add test_netstat_detection with simulated flows
+- [ ] 3. Test: python test_ping_detection.py - verify detections
+- [ ] 4. Run realtime demo: python app_fixed.py (or main app), simulate traffic
+- [x] 0. Plan approved and TODO created ✅
 
+**Next:** Implement step 1.

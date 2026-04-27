@@ -61,6 +61,7 @@ class RealtimeNIDSSystem:
         self.http_flood_tracker = defaultdict(lambda: {'requests': 0, 'last_time': 0})
         self.malformed_tracker = defaultdict(lambda: {'count': 0, 'last_time': 0})
         self.icmp_tracker = defaultdict(lambda: {'count': 0, 'last_time': 0})
+        self.netstat_tracker = defaultdict(lambda: {'ports': set(), 'count': 0, 'last_time': 0})
         
         # Alerts system for data uploads and large transfers
         self.alerts = []  # List of active alerts
@@ -76,7 +77,7 @@ class RealtimeNIDSSystem:
         
         # File upload detection state
         self.file_upload_tracker = defaultdict(lambda: {'count': 0, 'total_bytes': 0, 'last_time': 0})
-        self.FILE_UPLOAD_THRESHOLD = 1024 * 100  # 100KB threshold to catch uploads across services
+        self.FILE_UPLOAD_THRESHOLD = 1024 * 1024 * 2  # 2MB threshold for file uploads
         self.FILE_UPLOAD_PORTS = [80, 443, 21, 22, 139, 445, 3306, 5432, 8080, 8443]  # Common file transfer ports
 
         # Load model and preprocessors
@@ -144,9 +145,39 @@ class RealtimeNIDSSystem:
                 return {
                     'is_attack': True,
                     'attack_type': 'ICMP Ping Flood/Scan',
-                    'severity': 5,
+'severity': 2,
                     'confidence': 85.0,
                     'explanation': f"🚨 ICMP flood detected: {icmp_count} pings from {src_ip} in 10s"
+                }
+        return None
+
+    def _detect_netstat_recon(self, flow_features):
+        """Detect netstat command reconnaissance (multiple high port probes)"""
+        src_ip = flow_features.get('src_ip', 'Unknown')
+        proto = str(flow_features.get('proto', '')).lower()
+        dst_port = int(flow_features.get('dst_port', 0))
+        dst_ip = flow_features.get('dst_ip', 'Unknown')
+        current_time = time.time()
+
+        # Netstat typically probes ephemeral ports >1024 or localhost
+        if proto in ['tcp', 'udp'] and (dst_port > 1024 or dst_ip in ['127.0.0.1', '::1']):
+            self.netstat_tracker[src_ip]['ports'].add(dst_port)
+            self.netstat_tracker[src_ip]['count'] += 1
+            self.netstat_tracker[src_ip]['last_time'] = current_time
+            
+            # Cleanup old (>30s window)
+            for ip in list(self.netstat_tracker):
+                if current_time - self.netstat_tracker[ip]['last_time'] > 30:
+                    del self.netstat_tracker[ip]
+            
+            port_count = len(self.netstat_tracker[src_ip]['ports'])
+            if port_count >= 10:  # 10+ unique high ports = recon
+                return {
+                    'is_attack': True,
+                    'attack_type': 'Netstat Reconnaissance',
+                    'severity': 7,
+                    'confidence': 88.0,
+                    'explanation': f"🔍 Netstat-like recon: {port_count} high ports probed from {src_ip} in 30s"
                 }
         return None
 
@@ -450,6 +481,10 @@ class RealtimeNIDSSystem:
             icmp_attack = self._detect_icmp_attack(flow_features)
             is_icmp_attack = icmp_attack is not None
             
+            # Check for netstat reconnaissance
+            netstat_attack = self._detect_netstat_recon(flow_features)
+            is_netstat_attack = netstat_attack is not None
+            
             # Make prediction using model if available
             if self.model:
                 try:
@@ -490,20 +525,23 @@ class RealtimeNIDSSystem:
                         'dbytes': int(flow_features.get('dbytes', 0)),
                         'src_bytes': int(flow_features.get('sbytes', 0)),
                         'dst_bytes': int(flow_features.get('dbytes', 0)),
-                        'prediction': 'Attack' if (is_attack or is_icmp_attack) else 'Normal',
-                        'confidence': confidence if not is_icmp_attack else icmp_attack['confidence'],
-                        'attack_probability': confidence if not is_icmp_attack else icmp_attack['confidence'],
-                        'severity_score': icmp_attack['severity'] if is_icmp_attack else (int((confidence / 10)) if is_attack else 0),
+                        'prediction': 'Attack' if (is_attack or is_icmp_attack or is_netstat_attack) else 'Normal',
+                        'confidence': confidence if not (is_icmp_attack or is_netstat_attack) else (icmp_attack['confidence'] if is_icmp_attack else netstat_attack['confidence']),
+                        'attack_probability': confidence if not (is_icmp_attack or is_netstat_attack) else (icmp_attack['confidence'] if is_icmp_attack else netstat_attack['confidence']),
+                        'severity_score': (icmp_attack['severity'] if is_icmp_attack else netstat_attack['severity']) if (is_icmp_attack or is_netstat_attack) else (int((confidence / 10)) if is_attack else 0),
                         'attack_cat': flow_features.get('attack_cat', 'Unknown'),
                         'state': flow_features.get('state', 'EST'),
                         'xai_explanation': ''
                     }
                     
                     # Add to appropriate list
-                    if is_attack:
+                    if is_attack or is_icmp_attack or is_netstat_attack:
                         if is_icmp_attack:
                             record['attack_cat'] = icmp_attack['attack_type']
                             record['xai_explanation'] = icmp_attack['explanation']
+                        elif is_netstat_attack:
+                            record['attack_cat'] = netstat_attack['attack_type']
+                            record['xai_explanation'] = netstat_attack['explanation']
                         
                         self.attack_traffic.append(record)
                         self.detection_count += 1
